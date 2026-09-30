@@ -5,6 +5,7 @@
  * - Алгоритм Левенштейна для вычисления расстояния редактирования
  * - Метрики схожести строк и чисел
  * - Комбинированный алгоритм оценки совпадений
+ * - Выравнивание списков с сохранением порядка (как diff)
  * - Поиск лучших совпадений с автоматической классификацией
  *
  * @module utils/matching
@@ -13,4 +14,5 @@
 export * from './levenshtein';
 export * from './similarity';
 export * from './calculateMatchScore';
+export * from './alignByKey';
 export * from './findBestMatches';

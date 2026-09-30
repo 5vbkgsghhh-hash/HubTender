@@ -1,5 +1,19 @@
 /**
  * Поиск лучших совпадений между позициями старой и новой версий тендера
+ *
+ * Строки ВОР между версиями идут в прежнем порядке, поэтому сопоставление — выравнивание
+ * (как diff), а не поиск «лучшего кандидата по всему тендеру». Жадный глобальный поиск
+ * давал каскад ошибок: новая строка одного раздела забирала похожую строку другого,
+ * и дальше все одноимённые строки съезжали.
+ *
+ * 1. Якоря — строки с точно совпавшим наименованием, с сохранением порядка (alignByKey).
+ *    Одинаковые наименования различает место в документе, а не номер раздела.
+ * 2. Нечёткий поиск (переименования, смена объёма или ед.) — только внутри «дыры» между
+ *    соседними якорями и только при схожести наименований не ниже 60%.
+ * 3. Перенесённые блоки — точное наименование + ед. среди оставшихся строк
+ *    с продолжением последовательности.
+ *
+ * item_no влияет только на оценку и только если нумерация между версиями не перебита.
  */
 
 import {
@@ -8,30 +22,25 @@ import {
   type ParsedRow,
   type MatchScoreBreakdown,
 } from './calculateMatchScore';
-import { calculateVolumeProximity, normalizeString } from './similarity';
+import { normalizeString, similarityFromNormalized } from './similarity';
+import { alignByKey } from './alignByKey';
 import type { ClientPosition } from '../../lib/types';
 
-const POSITION_WINDOW = 80;
-const MAX_FULL_SCORE_CANDIDATES = 30;
+/** Минимальная схожесть наименований (0..1) для нечёткой пары. */
+const MIN_FUZZY_NAME_SIMILARITY = 0.6;
+/** Нечёткая пара принимается при оценке строго выше этого значения. */
+const MIN_FUZZY_SCORE = 50;
+/** Доля строк с тем же номером и наименованием, ниже которой нумерацию считаем перебитой. */
+const MIN_ITEM_NO_RELIABILITY = 0.5;
+/** Дыра крупнее (старые × новые строки) оценивается только в полосе вдоль диагонали. */
+const MAX_FULL_GAP_PAIRS = 40_000;
+/** Полуширина полосы для крупных дыр, строк. */
+const GAP_BAND = 60;
 
-interface PositionMeta {
-  position: ClientPosition;
-  normalizedItemNo: string;
-  normalizedUnitCode: string;
-  normalizedWorkName: string;
-  primaryToken: string;
-  volumeKey: string;
-  index: number;
-}
-
-interface ParsedRowMeta {
-  position: ParsedRow;
-  normalizedItemNo: string;
-  normalizedUnitCode: string;
-  normalizedWorkName: string;
-  primaryToken: string;
-  volumeKey: string;
-  index: number;
+interface RowMeta {
+  itemNo: string;
+  unitCode: string;
+  workName: string;
 }
 
 /**
@@ -44,349 +53,241 @@ export interface MatchResult {
   matchType: 'auto' | 'low_confidence';
 }
 
-function normalizeLookup(value: string | null | undefined): string {
-  return normalizeString(value || '');
+/** Как в calculateMatchScore: номер и ед. сравниваются без вычистки символов («1.11» ≠ «11.1»). */
+function normalizeCode(value: string | null | undefined): string {
+  return (value || '').trim().toLowerCase();
 }
 
-function formatVolumeKey(value: number | null | undefined): string {
-  if (value == null || Number.isNaN(value)) {
-    return '';
-  }
-
-  return Number(value).toFixed(6);
-}
-
-function extractPrimaryToken(normalizedWorkName: string): string {
-  const token = normalizedWorkName
-    .split(' ')
-    .find(part => part.length >= 3);
-
-  return token || '';
-}
-
-function buildPositionMeta(position: ClientPosition, index: number): PositionMeta {
-  const normalizedWorkName = normalizeLookup(position.work_name);
-
+function buildMeta(position: ClientPosition | ParsedRow): RowMeta {
   return {
-    position,
-    normalizedItemNo: normalizeLookup(position.item_no),
-    normalizedUnitCode: normalizeLookup(position.unit_code),
-    normalizedWorkName,
-    primaryToken: extractPrimaryToken(normalizedWorkName),
-    volumeKey: formatVolumeKey(position.volume),
-    index,
+    itemNo: normalizeCode(position.item_no),
+    unitCode: normalizeCode(position.unit_code),
+    workName: normalizeString(position.work_name || ''),
   };
 }
 
-function buildParsedRowMeta(position: ParsedRow, index: number): ParsedRowMeta {
-  const normalizedWorkName = normalizeLookup(position.work_name);
-
-  return {
-    position,
-    normalizedItemNo: normalizeLookup(position.item_no),
-    normalizedUnitCode: normalizeLookup(position.unit_code),
-    normalizedWorkName,
-    primaryToken: extractPrimaryToken(normalizedWorkName),
-    volumeKey: formatVolumeKey(position.volume),
-    index,
-  };
-}
-
-function buildStrongKey(meta: Pick<PositionMeta, 'normalizedItemNo' | 'normalizedUnitCode' | 'normalizedWorkName'>): string {
-  return `${meta.normalizedItemNo}|${meta.normalizedUnitCode}|${meta.normalizedWorkName}`;
-}
-
-function buildExactKey(meta: Pick<PositionMeta, 'normalizedItemNo' | 'normalizedUnitCode' | 'normalizedWorkName' | 'volumeKey'>): string {
-  return `${buildStrongKey(meta)}|${meta.volumeKey}`;
-}
-
-function pushToMap<T>(map: Map<string, T[]>, key: string, value: T) {
-  if (!key || key === '||' || key === '|||') {
-    return;
+/**
+ * Нумерация надёжна, если у большинства пронумерованных строк новой версии в старой есть
+ * строка с тем же номером и тем же наименованием. Иначе заказчик перенумеровал разделы
+ * (10.4.1 → 1.7.4.1), и случайное совпадение номеров («1.1» стал другим разделом) только вредит.
+ */
+function isItemNoReliable(oldMetas: RowMeta[], newMetas: RowMeta[]): boolean {
+  const namesByItemNo = new Map<string, Set<string>>();
+  for (const meta of oldMetas) {
+    if (!meta.itemNo) continue;
+    const names = namesByItemNo.get(meta.itemNo) ?? new Set<string>();
+    names.add(meta.workName);
+    namesByItemNo.set(meta.itemNo, names);
   }
 
-  const bucket = map.get(key) || [];
-  bucket.push(value);
-  map.set(key, bucket);
-}
-
-function addCandidates(
-  target: PositionMeta[],
-  source: PositionMeta[] | undefined,
-  usedOldPositions: Set<string>,
-  seenIds: Set<string>
-) {
-  if (!source) {
-    return;
+  let numbered = 0;
+  let confirmed = 0;
+  for (const meta of newMetas) {
+    if (!meta.itemNo) continue;
+    numbered++;
+    if (namesByItemNo.get(meta.itemNo)?.has(meta.workName)) confirmed++;
   }
 
-  for (const candidate of source) {
-    if (usedOldPositions.has(candidate.position.id) || seenIds.has(candidate.position.id)) {
-      continue;
+  return numbered > 0 && confirmed / numbered >= MIN_ITEM_NO_RELIABILITY;
+}
+
+/** Схожесть наименований с дешёвым отсевом: расстояние Левенштейна не меньше разницы длин. */
+function nameSimilarity(left: string, right: string): number {
+  if (left === right) return 1;
+  const maxLength = Math.max(left.length, right.length);
+  if (Math.min(left.length, right.length) / maxLength < MIN_FUZZY_NAME_SIMILARITY) return 0;
+  return similarityFromNormalized(left, right);
+}
+
+class Alignment {
+  readonly newToOld: Int32Array;
+  readonly oldUsed: Uint8Array;
+  /** Схожесть наименований сопоставленной пары — чтобы не считать её повторно. */
+  readonly similarity: Float64Array;
+
+  constructor(oldCount: number, newCount: number) {
+    this.newToOld = new Int32Array(newCount).fill(-1);
+    this.oldUsed = new Uint8Array(oldCount);
+    this.similarity = new Float64Array(newCount);
+  }
+
+  link(oldIdx: number, newIdx: number, similarity: number) {
+    this.newToOld[newIdx] = oldIdx;
+    this.oldUsed[oldIdx] = 1;
+    this.similarity[newIdx] = similarity;
+  }
+}
+
+interface MatchContext {
+  oldPositions: ClientPosition[];
+  newPositions: ParsedRow[];
+  oldMetas: RowMeta[];
+  newMetas: RowMeta[];
+  useItemNo: boolean;
+  alignment: Alignment;
+}
+
+function scorePair(ctx: MatchContext, oldIdx: number, newIdx: number, similarity: number) {
+  return calculateMatchScore(
+    ctx.oldPositions[oldIdx],
+    ctx.newPositions[newIdx],
+    ctx.oldMetas[oldIdx].workName,
+    ctx.newMetas[newIdx].workName,
+    { useItemNo: ctx.useItemNo, nameSimilarity: similarity }
+  );
+}
+
+/** Фаза 2: нечёткие пары внутри дыры old [oldStart, oldEnd) × new [newStart, newEnd). */
+function matchGap(ctx: MatchContext, oldStart: number, oldEnd: number, newStart: number, newEnd: number) {
+  const { alignment, oldMetas, newMetas } = ctx;
+  const oldSize = oldEnd - oldStart;
+  const newSize = newEnd - newStart;
+  const fullScan = oldSize * newSize <= MAX_FULL_GAP_PAIRS;
+  const candidates: Array<{ total: number; offset: number; oldIdx: number; newIdx: number; similarity: number }> = [];
+
+  for (let newIdx = newStart; newIdx < newEnd; newIdx++) {
+    let from = oldStart;
+    let to = oldEnd;
+    if (!fullScan) {
+      const center = oldStart + Math.round(((newIdx - newStart) * oldSize) / newSize);
+      from = Math.max(oldStart, center - GAP_BAND);
+      to = Math.min(oldEnd, center + GAP_BAND + 1);
     }
 
-    seenIds.add(candidate.position.id);
-    target.push(candidate);
-  }
-}
+    for (let oldIdx = from; oldIdx < to; oldIdx++) {
+      const similarity = nameSimilarity(oldMetas[oldIdx].workName, newMetas[newIdx].workName);
+      if (similarity < MIN_FUZZY_NAME_SIMILARITY) continue;
 
-function buildQuickScore(candidate: PositionMeta, current: ParsedRowMeta): number {
-  let score = 0;
+      const { total } = scorePair(ctx, oldIdx, newIdx, similarity);
+      if (total <= MIN_FUZZY_SCORE) continue;
 
-  if (candidate.normalizedItemNo && candidate.normalizedItemNo === current.normalizedItemNo) {
-    score += 140;
-  }
-
-  if (candidate.normalizedWorkName && candidate.normalizedWorkName === current.normalizedWorkName) {
-    score += 60;
+      const offset = Math.abs((oldIdx - oldStart) - (newIdx - newStart));
+      candidates.push({ total, offset, oldIdx, newIdx, similarity });
+    }
   }
 
-  if (candidate.normalizedUnitCode && candidate.normalizedUnitCode === current.normalizedUnitCode) {
-    score += 25;
-  }
-
-  if (candidate.primaryToken && candidate.primaryToken === current.primaryToken) {
-    score += 15;
-  }
-
-  if (candidate.volumeKey && candidate.volumeKey === current.volumeKey) {
-    score += 15;
-  }
-
-  score += calculateVolumeProximity(candidate.position.volume ?? null, current.position.volume ?? null) * 10;
-  score += Math.max(0, 15 - Math.abs(candidate.index - current.index) / 5);
-
-  return score;
-}
-
-function evaluateBestMatch(
-  candidates: PositionMeta[],
-  current: ParsedRowMeta,
-  scoreCache: Map<string, MatchScoreBreakdown>
-): { oldPos: ClientPosition; score: MatchScoreBreakdown } | null {
-  let bestMatch: {
-    oldPos: ClientPosition;
-    score: MatchScoreBreakdown;
-  } | null = null;
-
+  // Сначала лучшие оценки; при равенстве — пара, сильнее сохраняющая порядок строк
+  candidates.sort((left, right) => right.total - left.total || left.offset - right.offset);
   for (const candidate of candidates) {
-    // Score детерминирован для пары (candidate, current) — кэшируем в рамках одной новой
-    // позиции, чтобы не пересчитывать кандидата, попавшего в несколько списков (exact/strong/shortlist/fallback).
-    let score = scoreCache.get(candidate.position.id);
-    if (score === undefined) {
-      score = calculateMatchScore(
-        candidate.position,
-        current.position,
-        candidate.normalizedWorkName,
-        current.normalizedWorkName
-      );
-      scoreCache.set(candidate.position.id, score);
-    }
-
-    if (!bestMatch || score.total > bestMatch.score.total) {
-      bestMatch = {
-        oldPos: candidate.position,
-        score,
-      };
+    if (!alignment.oldUsed[candidate.oldIdx] && alignment.newToOld[candidate.newIdx] < 0) {
+      alignment.link(candidate.oldIdx, candidate.newIdx, candidate.similarity);
     }
   }
-
-  return bestMatch;
 }
 
-function getUnusedCandidates(
-  source: PositionMeta[] | undefined,
-  usedOldPositions: Set<string>
-): PositionMeta[] {
-  if (!source) {
-    return [];
-  }
+/** Фаза 2: обойти все дыры между соседними якорями (якоря монотонны по обоим спискам). */
+function matchGaps(ctx: MatchContext) {
+  const { newToOld } = ctx.alignment;
+  const oldCount = ctx.oldMetas.length;
+  const newCount = ctx.newMetas.length;
+  let oldStart = 0;
+  let newStart = 0;
 
-  return source.filter(candidate => !usedOldPositions.has(candidate.position.id));
+  for (let newIdx = 0; newIdx <= newCount; newIdx++) {
+    const oldIdx = newIdx < newCount ? newToOld[newIdx] : oldCount;
+    if (oldIdx < 0) continue;
+
+    if (newIdx > newStart && oldIdx > oldStart) {
+      matchGap(ctx, oldStart, oldIdx, newStart, newIdx);
+    }
+    oldStart = oldIdx + 1;
+    newStart = newIdx + 1;
+  }
 }
 
-function collectCandidatePool(
-  oldMetas: PositionMeta[],
-  current: ParsedRowMeta,
-  usedOldPositions: Set<string>,
-  byItemNo: Map<string, PositionMeta[]>,
-  byUnitCode: Map<string, PositionMeta[]>,
-  byToken: Map<string, PositionMeta[]>
-): PositionMeta[] {
-  const candidates: PositionMeta[] = [];
-  const seenIds = new Set<string>();
+/**
+ * Фаза 3: перенесённые блоки. Среди оставшихся строк — то же наименование и ед.;
+ * предпочтение строке сразу за предыдущей сопоставленной, иначе — единственной такой.
+ */
+function matchMovedRows(ctx: MatchContext) {
+  const { alignment, oldMetas, newMetas } = ctx;
+  const keyOf = (meta: RowMeta) => (meta.workName ? `${meta.workName}|${meta.unitCode}` : null);
+  const oldKeys = oldMetas.map(keyOf);
+  const remaining = new Map<string, number[]>();
 
-  if (current.normalizedItemNo) {
-    addCandidates(candidates, byItemNo.get(current.normalizedItemNo), usedOldPositions, seenIds);
-  }
+  oldKeys.forEach((key, oldIdx) => {
+    if (key === null || alignment.oldUsed[oldIdx]) return;
+    const bucket = remaining.get(key) ?? [];
+    bucket.push(oldIdx);
+    remaining.set(key, bucket);
+  });
 
-  const windowStart = Math.max(0, current.index - POSITION_WINDOW);
-  const windowEnd = Math.min(oldMetas.length - 1, current.index + POSITION_WINDOW);
-
-  for (let idx = windowStart; idx <= windowEnd; idx++) {
-    const candidate = oldMetas[idx];
-
-    if (
-      usedOldPositions.has(candidate.position.id) ||
-      seenIds.has(candidate.position.id)
-    ) {
+  let lastOld = -2;
+  for (let newIdx = 0; newIdx < newMetas.length; newIdx++) {
+    if (alignment.newToOld[newIdx] >= 0) {
+      lastOld = alignment.newToOld[newIdx];
       continue;
     }
 
-    if (
-      (current.normalizedUnitCode && candidate.normalizedUnitCode === current.normalizedUnitCode) ||
-      (current.primaryToken && candidate.primaryToken === current.primaryToken) ||
-      Math.abs(candidate.index - current.index) <= 10
-    ) {
-      seenIds.add(candidate.position.id);
-      candidates.push(candidate);
+    const key = keyOf(newMetas[newIdx]);
+    const bucket = key === null ? undefined : remaining.get(key);
+    if (!bucket) continue;
+
+    const next = lastOld + 1;
+    let pick = -1;
+    if (next >= 0 && next < oldKeys.length && !alignment.oldUsed[next] && oldKeys[next] === key) {
+      pick = next;
+    } else {
+      const free = bucket.filter(oldIdx => !alignment.oldUsed[oldIdx]);
+      if (free.length === 1) pick = free[0];
+    }
+
+    if (pick >= 0) {
+      alignment.link(pick, newIdx, 1);
+      lastOld = pick;
     }
   }
-
-  if (current.normalizedUnitCode) {
-    addCandidates(candidates, byUnitCode.get(current.normalizedUnitCode), usedOldPositions, seenIds);
-  }
-
-  if (current.primaryToken) {
-    addCandidates(candidates, byToken.get(current.primaryToken), usedOldPositions, seenIds);
-  }
-
-  if (candidates.length === 0) {
-    addCandidates(candidates, oldMetas, usedOldPositions, seenIds);
-  }
-
-  // quickScore считаем один раз на кандидата, затем сортируем по готовому ключу
-  // (раньше компаратор пересчитывал buildQuickScore дважды на каждое сравнение).
-  const scored = candidates.map(candidate => ({
-    candidate,
-    quick: buildQuickScore(candidate, current),
-  }));
-  scored.sort((left, right) => right.quick - left.quick);
-
-  return scored.map(item => item.candidate);
 }
 
 /**
  * Найти лучшие совпадения для всех позиций
  *
- * Алгоритм:
- * 1. Сначала пытаемся найти точное совпадение по сильному ключу
- * 2. Для остальных строк строим короткий список кандидатов
- * 3. Полный перебор выполняем только как fallback для спорных строк
+ * @param oldPositions - позиции старой версии (доп. работы игнорируются)
+ * @param newPositions - строки новой версии из Excel
+ * @param threshold - оценка, начиная с которой пара считается точной ('auto')
  */
 export function findBestMatches(
   oldPositions: ClientPosition[],
   newPositions: ParsedRow[],
   threshold: number = 80
 ): MatchResult[] {
+  const activeOld = oldPositions.filter(position => !position.is_additional);
+  const oldMetas = activeOld.map(buildMeta);
+  const newMetas = newPositions.map(buildMeta);
+
+  const ctx: MatchContext = {
+    oldPositions: activeOld,
+    newPositions,
+    oldMetas,
+    newMetas,
+    useItemNo: isItemNoReliable(oldMetas, newMetas),
+    alignment: new Alignment(activeOld.length, newPositions.length),
+  };
+
+  // Фаза 1: якоря по точному наименованию; пустое наименование якорем не бывает
+  const anchors = alignByKey(
+    oldMetas.map(meta => meta.workName || null),
+    newMetas.map(meta => meta.workName || null)
+  );
+  anchors.forEach((oldIdx, newIdx) => {
+    if (oldIdx >= 0) ctx.alignment.link(oldIdx, newIdx, 1);
+  });
+
+  matchGaps(ctx);
+  matchMovedRows(ctx);
+
   const results: MatchResult[] = [];
-  const usedOldPositions = new Set<string>();
+  ctx.alignment.newToOld.forEach((oldIdx, newIdx) => {
+    if (oldIdx < 0) return;
 
-  const oldMetas = oldPositions
-    .filter(position => !position.is_additional)
-    .map((position, index) => buildPositionMeta(position, index));
-
-  const newMetas = newPositions.map((position, index) => buildParsedRowMeta(position, index));
-
-  const byItemNo = new Map<string, PositionMeta[]>();
-  const byUnitCode = new Map<string, PositionMeta[]>();
-  const byToken = new Map<string, PositionMeta[]>();
-  const byExactKey = new Map<string, PositionMeta[]>();
-  const byStrongKey = new Map<string, PositionMeta[]>();
-
-  for (const meta of oldMetas) {
-    if (meta.normalizedItemNo) {
-      pushToMap(byItemNo, meta.normalizedItemNo, meta);
-    }
-
-    if (meta.normalizedUnitCode) {
-      pushToMap(byUnitCode, meta.normalizedUnitCode, meta);
-    }
-
-    if (meta.primaryToken) {
-      pushToMap(byToken, meta.primaryToken, meta);
-    }
-
-    pushToMap(byExactKey, buildExactKey(meta), meta);
-    pushToMap(byStrongKey, buildStrongKey(meta), meta);
-  }
-
-  for (const current of newMetas) {
-    // Кэш score'ов в пределах текущей новой позиции (сбрасывается на каждой итерации).
-    const scoreCache = new Map<string, MatchScoreBreakdown>();
-    const exactCandidates = getUnusedCandidates(byExactKey.get(buildExactKey(current)), usedOldPositions);
-    let bestMatch: { oldPos: ClientPosition; score: MatchScoreBreakdown } | null = null;
-
-    if (exactCandidates.length > 0) {
-      bestMatch = evaluateBestMatch(exactCandidates, current, scoreCache);
-    }
-
-    if (!bestMatch) {
-      const strongCandidates = getUnusedCandidates(byStrongKey.get(buildStrongKey(current)), usedOldPositions);
-
-      if (strongCandidates.length > 0) {
-        bestMatch = evaluateBestMatch(strongCandidates, current, scoreCache);
-      }
-    }
-
-    if (!bestMatch || bestMatch.score.total < threshold) {
-      const candidatePool = collectCandidatePool(
-        oldMetas,
-        current,
-        usedOldPositions,
-        byItemNo,
-        byUnitCode,
-        byToken
-      );
-
-      const shortlistedCandidates = candidatePool.slice(0, MAX_FULL_SCORE_CANDIDATES);
-      const shortlistedBestMatch = evaluateBestMatch(shortlistedCandidates, current, scoreCache);
-
-      if (
-        shortlistedBestMatch &&
-        (!bestMatch || shortlistedBestMatch.score.total > bestMatch.score.total)
-      ) {
-        bestMatch = shortlistedBestMatch;
-      }
-
-      const bestScore = bestMatch?.score.total ?? 0;
-      const needsFullFallback =
-        bestScore < threshold &&
-        shortlistedCandidates.length < candidatePool.length;
-
-      if (needsFullFallback) {
-        const evaluatedIds = new Set(shortlistedCandidates.map(candidate => candidate.position.id));
-        const remainingCandidates = oldMetas.filter(candidate =>
-          !usedOldPositions.has(candidate.position.id) &&
-          !evaluatedIds.has(candidate.position.id)
-        );
-
-        const fallbackBestMatch = evaluateBestMatch(remainingCandidates, current, scoreCache);
-
-        if (
-          fallbackBestMatch &&
-          (!bestMatch || fallbackBestMatch.score.total > bestMatch.score.total)
-        ) {
-          bestMatch = fallbackBestMatch;
-        }
-      }
-    }
-
-    if (bestMatch && bestMatch.score.total > 50) {
-      const matchType = isAutoMatchScore(bestMatch.score, threshold)
-        ? 'auto'
-        : 'low_confidence';
-
-      results.push({
-        oldPositionId: bestMatch.oldPos.id,
-        newPositionIndex: current.index,
-        score: bestMatch.score,
-        matchType,
-      });
-
-      usedOldPositions.add(bestMatch.oldPos.id);
-    }
-  }
+    const score = scorePair(ctx, oldIdx, newIdx, ctx.alignment.similarity[newIdx]);
+    results.push({
+      oldPositionId: activeOld[oldIdx].id,
+      newPositionIndex: newIdx,
+      score,
+      matchType: isAutoMatchScore(score, threshold) ? 'auto' : 'low_confidence',
+    });
+  });
 
   return results;
 }
