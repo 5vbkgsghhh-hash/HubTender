@@ -40,6 +40,15 @@ func (s *stubRedistributionSvc) Save(
 	return s.out, nil
 }
 
+func (s *stubRedistributionSvc) Clear(_ context.Context, tenderID, tacticID string) (int, error) {
+	s.calls++
+	s.gotTender, s.gotTactic = tenderID, tacticID
+	if s.err != nil {
+		return 0, s.err
+	}
+	return 3, nil
+}
+
 func (s *stubRedistributionSvc) LoadResults(context.Context, string, string) (*repository.RedistributionLoad, error) {
 	if s.load == nil {
 		panic("stub load not configured")
@@ -455,5 +464,57 @@ func TestRedistributionSaveHandler_PipelineInvariants409(t *testing.T) {
 				t.Fatalf("detail leaks internals or is empty: %q", detail)
 			}
 		})
+	}
+}
+
+func doRedistributionClear(t *testing.T, svc redistributionServicer, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewRedistributionHandler(svc)
+	req := httptest.NewRequest("DELETE", "/api/v1/redistributions?"+query, nil)
+	req = req.WithContext(context.WithValue(req.Context(), middleware.CtxUser,
+		&middleware.AuthUser{ID: "user-1"}))
+	w := httptest.NewRecorder()
+	h.Clear(w, req)
+	return w
+}
+
+// Очистка снимка: пустые правила save отклоняет (RULES_EMPTY), поэтому удаление
+// всех правил идёт отдельной командой DELETE.
+func TestRedistributionClearHandler_DeletesSnapshot(t *testing.T) {
+	svc := &stubRedistributionSvc{}
+	w := doRedistributionClear(t, svc, fmt.Sprintf("tender_id=%s&markup_tactic_id=%s", rTender, rTactic))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			DeletedCount int `json:"deleted_count"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("bad response: %v", err)
+	}
+	if resp.Data.DeletedCount != 3 {
+		t.Fatalf("deleted_count = %d, want 3", resp.Data.DeletedCount)
+	}
+	if svc.calls != 1 || svc.gotTender != rTender || svc.gotTactic != rTactic {
+		t.Fatalf("service call wrong: calls=%d tender=%q tactic=%q", svc.calls, svc.gotTender, svc.gotTactic)
+	}
+}
+
+func TestRedistributionClearHandler_RejectsBadIDs(t *testing.T) {
+	for _, q := range []string{
+		"",
+		"tender_id=" + rTender,
+		"tender_id=not-a-uuid&markup_tactic_id=" + rTactic,
+	} {
+		svc := &stubRedistributionSvc{}
+		w := doRedistributionClear(t, svc, q)
+		if w.Code != 400 {
+			t.Fatalf("query %q: status = %d, want 400", q, w.Code)
+		}
+		if svc.calls != 0 {
+			t.Fatalf("query %q: service must not be called", q)
+		}
 	}
 }

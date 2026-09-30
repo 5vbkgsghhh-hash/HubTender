@@ -376,6 +376,7 @@ func newRouter(
 		// Phase 5: atomic redistribution save (cost_redistribution_results).
 		r.Post("/api/v1/redistributions/save", d.redistributionH.Save)
 		r.Get("/api/v1/redistributions", d.redistributionH.Load)
+		r.Delete("/api/v1/redistributions", d.redistributionH.Clear)
 
 		// Insurance (per-tender).
 		r.Get("/api/v1/tenders/{id}/insurance", d.insuranceH.Get)

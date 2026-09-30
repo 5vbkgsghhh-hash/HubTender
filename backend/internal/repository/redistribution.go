@@ -204,6 +204,85 @@ func (r *RedistributionRepo) SaveAuthoritative(
 	return resp, nil
 }
 
+// ClearAuthoritative deletes the redistribution snapshot for (tenderID,
+// tacticID) — the «очистка снимка» operation that an empty-rules save refuses
+// (RULES_EMPTY). Without it a user who removed every rule saw them come back
+// on reload: the page had nothing it could send.
+//
+// One transaction, mirroring SaveAuthoritative: the tender row is locked, and
+// only when a snapshot actually exists does the command bump the financial
+// input revision (the redistributed figures the approval was given for are
+// gone), re-materialize, delete, recompute the grand total and finish with the
+// success CAS. An absent snapshot is a no-op: an idempotent repeat must not
+// revoke a financial approval. The tactic is NOT required to be the active
+// one — dropping another tactic's snapshot is always safe.
+//
+// Returns the number of deleted rows.
+func (r *RedistributionRepo) ClearAuthoritative(
+	ctx context.Context,
+	tenderID, tacticID string,
+) (int, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// FOR UPDATE serializes with a concurrent save (its revision bump updates
+	// the same row), so the existence check below sees the committed state.
+	var exists bool
+	err = tx.QueryRow(ctx,
+		`SELECT true FROM public.tenders WHERE id = $1::uuid FOR UPDATE`, tenderID,
+	).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrRedistributionTenderNotFound
+		}
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: tender: %w", err)
+	}
+
+	var hasSnapshot bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM public.cost_redistribution_results
+			WHERE tender_id = $1::uuid AND markup_tactic_id = $2::uuid
+		)
+	`, tenderID, tacticID).Scan(&hasSnapshot); err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: exists: %w", err)
+	}
+	if !hasSnapshot {
+		return 0, nil
+	}
+
+	revision, err := MarkTenderFinancialInputsChangedTx(ctx, tx, tenderID, "redistribution_clear")
+	if err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: %w", err)
+	}
+	if err := MaterializeCommercialForTenderTx(ctx, tx, tenderID); err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM public.cost_redistribution_results
+		WHERE tender_id = $1::uuid AND markup_tactic_id = $2::uuid
+	`, tenderID, tacticID)
+	if err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: delete: %w", err)
+	}
+
+	if _, err := RecalculateTenderGrandTotalTx(ctx, tx, tenderID); err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: grand total: %w", err)
+	}
+	if err := MarkTenderCalculationSucceededTx(ctx, tx, tenderID, revision); err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("redistributionRepo.ClearAuthoritative: commit: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // loadNameMap reads an id→name map.
 func loadNameMap(ctx context.Context, tx pgx.Tx, q string) (map[string]string, error) {
 	rows, err := tx.Query(ctx, q)

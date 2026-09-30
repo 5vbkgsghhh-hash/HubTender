@@ -22,6 +22,7 @@ type redistributionServicer interface {
 		rules calc.RedistributionRulesInput,
 		createdBy string,
 	) (*repository.RedistributionSaveOutput, error)
+	Clear(ctx context.Context, tenderID, tacticID string) (int, error)
 	LoadResults(ctx context.Context, tenderID, tacticID string) (*repository.RedistributionLoad, error)
 }
 
@@ -199,6 +200,41 @@ func (h *RedistributionHandler) Save(w http.ResponseWriter, r *http.Request) {
 		PositionDeltas:    out.PositionDeltas,
 		Prepared:          out.Prepared,
 	}})
+}
+
+// Clear handles DELETE /api/v1/redistributions?tender_id=&markup_tactic_id=.
+// Deletes the saved snapshot — the empty-rules case the save rejects as
+// RULES_EMPTY. Idempotent: an absent snapshot returns deleted_count = 0.
+func (h *RedistributionHandler) Clear(w http.ResponseWriter, r *http.Request) {
+	if middleware.UserFromContext(r.Context()) == nil {
+		apierr.Unauthorized("missing auth context").Render(w)
+		return
+	}
+
+	tenderID := r.URL.Query().Get("tender_id")
+	tacticID := r.URL.Query().Get("markup_tactic_id")
+	if h.validate.Var(tenderID, "required,uuid") != nil || h.validate.Var(tacticID, "required,uuid") != nil {
+		apierr.BadRequest("tender_id and markup_tactic_id must be UUIDs").Render(w)
+		return
+	}
+
+	deleted, err := h.svc.Clear(r.Context(), tenderID, tacticID)
+	if err != nil {
+		if renderRedistributionError(w, err) {
+			return
+		}
+		if renderMissingFXRate(w, err) {
+			return
+		}
+		if errors.Is(err, repository.ErrRedistributionTenderNotFound) {
+			apierr.NotFound(err.Error()).Render(w)
+			return
+		}
+		apierr.InternalFromErr(w, r, err, "failed to clear redistribution results")
+		return
+	}
+
+	renderJSON(w, r, http.StatusOK, dataEnvelope{Data: map[string]int{"deleted_count": deleted}})
 }
 
 // Load handles GET /api/v1/redistributions?tender_id=&markup_tactic_id=.

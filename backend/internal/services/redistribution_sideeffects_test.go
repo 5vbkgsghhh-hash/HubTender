@@ -16,9 +16,10 @@ import (
 // repository call per save (no per-row calls).
 
 type fakeRedistributionRepo struct {
-	out   *repository.RedistributionSaveOutput
-	err   error
-	calls int
+	out     *repository.RedistributionSaveOutput
+	cleared int
+	err     error
+	calls   int
 }
 
 func (f *fakeRedistributionRepo) SaveAuthoritative(
@@ -29,6 +30,14 @@ func (f *fakeRedistributionRepo) SaveAuthoritative(
 		return nil, f.err
 	}
 	return f.out, nil
+}
+
+func (f *fakeRedistributionRepo) ClearAuthoritative(context.Context, string, string) (int, error) {
+	f.calls++
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.cleared, nil
 }
 
 func (f *fakeRedistributionRepo) LoadResults(context.Context, string, string) (*repository.RedistributionLoad, error) {
@@ -98,5 +107,43 @@ func TestRedistributionSave_SuccessSingleBatchedCall(t *testing.T) {
 		if _, ok := c.Get(key); ok {
 			t.Fatalf("cache key %q must be invalidated on success", key)
 		}
+	}
+}
+
+func TestRedistributionClear_InvalidatesCacheOnlyWhenDeleted(t *testing.T) {
+	const tenderID = "tender-1"
+	keys := []string{"tender:overview:" + tenderID, "positions:with_costs:" + tenderID, tenderListKeyPrefix + "all"}
+	for _, tc := range []struct {
+		name        string
+		cleared     int
+		err         error
+		invalidated bool
+	}{
+		{name: "deleted", cleared: 5, invalidated: true},
+		{name: "noop", cleared: 0, invalidated: false},
+		{name: "error", err: &calc.MissingFXRateError{Currency: "USD"}, invalidated: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := cache.New()
+			for _, key := range keys {
+				c.Set(key, "cached", time.Minute)
+			}
+			repo := &fakeRedistributionRepo{cleared: tc.cleared, err: tc.err}
+			svc := &RedistributionService{repo: repo, cache: c}
+
+			n, err := svc.Clear(context.Background(), tenderID, "tactic-1")
+			if tc.err != nil {
+				if !errors.Is(err, tc.err) {
+					t.Fatalf("domain error lost through %%w: %v", err)
+				}
+			} else if err != nil || n != tc.cleared {
+				t.Fatalf("n=%d err=%v, want %d", n, err, tc.cleared)
+			}
+			for _, key := range keys {
+				if _, ok := c.Get(key); ok == tc.invalidated {
+					t.Fatalf("cache key %q: present=%v, want invalidated=%v", key, ok, tc.invalidated)
+				}
+			}
+		})
 	}
 }

@@ -14,6 +14,7 @@ import { message } from 'antd';
 import {
   saveRedistributionResults,
   loadRedistributionResults,
+  clearRedistributionResults,
   type SavedRedistribution,
   type LoadedRedistribution,
 } from '../../../lib/api/redistributions';
@@ -105,6 +106,34 @@ export function useSaveResults() {
     [],
   );
 
+  // Все правила удалены → удалить снимок на сервере. true = сервер подтвердил.
+  const clearSavedResults = useCallback(
+    async (tenderId: string, tacticId: string): Promise<boolean> => {
+      if (!tenderId || !tacticId) {
+        return false;
+      }
+
+      setSaving(true);
+      try {
+        await clearRedistributionResults(tenderId, tacticId);
+        markRealtimeMutation(`tender:${tenderId}`);
+        message.success('Перераспределение очищено');
+        return true;
+      } catch (error) {
+        console.error('Ошибка очистки перераспределения:', error);
+        const body = (error as { body?: ProblemBody }).body;
+        const detail = body?.detail || (error instanceof Error ? error.message : '');
+        message.error(
+          detail ? `Не удалось очистить перераспределение: ${detail}` : 'Не удалось очистить перераспределение',
+        );
+        return false;
+      } finally {
+        setSaving(false);
+      }
+    },
+    [],
+  );
+
   const loadSavedResults = useCallback(
     async (tenderId: string, tacticId: string): Promise<LoadedRedistribution | null> => {
       if (!tenderId || !tacticId) {
@@ -124,6 +153,7 @@ export function useSaveResults() {
   return {
     saving,
     saveResults,
+    clearSavedResults,
     loadSavedResults,
   };
 }

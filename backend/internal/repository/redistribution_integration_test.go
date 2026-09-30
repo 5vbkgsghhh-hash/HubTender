@@ -470,3 +470,62 @@ func TestRedistributionLoad_LegacySnapshotRequiresRecalculation(t *testing.T) {
 		t.Fatalf("legacy rows must still be returned for inspection, got %d", len(load.Results))
 	}
 }
+
+// ─── Очистка снимка: все правила удалены на странице ─────────────────────────
+
+func TestRedistributionClear_DeletesSnapshotAndBumpsRevision(t *testing.T) {
+	pool := newTestPool(t)
+	f := seedRedistributionFixture(t, pool, "clear", nil)
+	f.seedTwoItems(t, pool)
+	ctx := context.Background()
+
+	repo := NewRedistributionRepo(pool)
+	if _, err := repo.SaveAuthoritative(ctx, f.tenderID, f.tacticID, f.d1toD2Rules(), rbActor); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	approveDirect(t, pool, f.tenderID)
+	before := readFinState(t, pool, f.tenderID)
+
+	deleted, err := repo.ClearAuthoritative(ctx, f.tenderID, f.tacticID)
+	if err != nil {
+		t.Fatalf("clear failed: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+	if rows := readRdRows(t, pool, f.tenderID, f.tacticID); len(rows) != 0 {
+		t.Fatalf("snapshot rows survived the clear: %v", rows)
+	}
+	load, err := repo.LoadResults(ctx, f.tenderID, f.tacticID)
+	if err != nil || load.Status != RedistributionStatusNotConfigured {
+		t.Fatalf("status = %q err=%v, want not_configured", load.Status, err)
+	}
+	after := readFinState(t, pool, f.tenderID)
+	if after.inputRev != before.inputRev+1 || after.calcRev != after.inputRev || after.status != "calculated" {
+		t.Fatalf("revision state wrong: before %+v after %+v", before, after)
+	}
+	if after.approved {
+		t.Fatal("clearing a snapshot must invalidate the financial approval")
+	}
+
+	// Повторная очистка — no-op: ревизия и согласование не трогаются.
+	approveDirect(t, pool, f.tenderID)
+	deleted, err = repo.ClearAuthoritative(ctx, f.tenderID, f.tacticID)
+	if err != nil || deleted != 0 {
+		t.Fatalf("repeat clear: deleted=%d err=%v, want 0/nil", deleted, err)
+	}
+	again := readFinState(t, pool, f.tenderID)
+	if again.inputRev != after.inputRev || !again.approved {
+		t.Fatalf("no-op clear changed tender state: %+v → %+v", after, again)
+	}
+}
+
+func TestRedistributionClear_UnknownTender(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewRedistributionRepo(pool)
+	_, err := repo.ClearAuthoritative(context.Background(),
+		"00000000-0000-0000-0000-00000000c1ea", "00000000-0000-0000-0000-00000000c1eb")
+	if !errors.Is(err, ErrRedistributionTenderNotFound) {
+		t.Fatalf("err = %v, want ErrRedistributionTenderNotFound", err)
+	}
+}

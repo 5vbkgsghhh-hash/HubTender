@@ -16,6 +16,7 @@ type redistributionRepoer interface {
 		rules calc.RedistributionRulesInput,
 		createdBy string,
 	) (*repository.RedistributionSaveOutput, error)
+	ClearAuthoritative(ctx context.Context, tenderID, tacticID string) (int, error)
 	LoadResults(ctx context.Context, tenderID, tacticID string) (*repository.RedistributionLoad, error)
 }
 
@@ -51,6 +52,22 @@ func (s *RedistributionService) Save(
 	s.cache.DeleteByPrefix(tenderListKeyPrefix) // grand total may have changed
 
 	return out, nil
+}
+
+// Clear deletes the redistribution snapshot (every rule removed on the page).
+// Caches are invalidated only when something was actually deleted and
+// committed; a no-op clear leaves them intact.
+func (s *RedistributionService) Clear(ctx context.Context, tenderID, tacticID string) (int, error) {
+	deleted, err := s.repo.ClearAuthoritative(ctx, tenderID, tacticID)
+	if err != nil {
+		return 0, fmt.Errorf("redistributionService.Clear: %w", err)
+	}
+	if deleted > 0 {
+		s.cache.Delete("tender:overview:" + tenderID)
+		s.cache.Delete("positions:with_costs:" + tenderID)
+		s.cache.DeleteByPrefix(tenderListKeyPrefix)
+	}
+	return deleted, nil
 }
 
 // LoadResults returns the saved redistribution snapshot for (tenderID,

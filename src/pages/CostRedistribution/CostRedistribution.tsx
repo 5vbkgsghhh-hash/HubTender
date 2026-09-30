@@ -62,6 +62,10 @@ const CostRedistribution: React.FC = () => {
   // Слепок правил, который сервер уже подтвердил (после load или успешного
   // save). Автосохранение молчит, пока текущие правила ему равны.
   const serverKnownRulesRef = useRef<string | null>(null);
+  // Для какой пары «тендер:тактика» загружены текущие правила. Пока грузится
+  // новая пара, в стейте ещё правила прежней — сохранять/очищать их нельзя
+  // (иначе отложенный автосейв удалит снимок чужого тендера).
+  const hydratedKeyRef = useRef<string | null>(null);
 
   // Хуки для управления данными
   const {
@@ -99,7 +103,7 @@ const CostRedistribution: React.FC = () => {
     detailCategoriesMap
   );
 
-  const { saving, saveResults, loadSavedResults } = useSaveResults();
+  const { saving, saveResults, clearSavedResults, loadSavedResults } = useSaveResults();
 
   const boqItemsByPosition = useMemo(() => {
     const map = new Map<string, typeof boqItems>();
@@ -186,6 +190,7 @@ const CostRedistribution: React.FC = () => {
   // Загрузка сохраненных результатов при выборе тендера и тактики
   useEffect(() => {
     const loadResults = async () => {
+      hydratedKeyRef.current = null;
       if (!selectedTenderId || !selectedTacticId) {
         // Очистить при сбросе выбора
         clearRules();
@@ -285,6 +290,7 @@ const CostRedistribution: React.FC = () => {
       } finally {
         // Гидрация завершена — зафиксировать «то, что уже есть на сервере»,
         // чтобы автосохранение не отправляло только что загруженные правила.
+        hydratedKeyRef.current = `${selectedTenderId}:${selectedTacticId}`;
         setHydrationTick((n) => n + 1);
       }
     };
@@ -425,10 +431,29 @@ const CostRedistribution: React.FC = () => {
     if (!selectedTenderId || !selectedTacticId) {
       return;
     }
+    if (hydratedKeyRef.current !== `${selectedTenderId}:${selectedTacticId}`) {
+      return;
+    }
     // Rules-only команда: никаких results/placeholder/boqItems с клиента.
     // Position-only конфигурация (category-правила пусты) поддерживается
     // сервером нативно — он сам создаёт no-op category-результат.
     if (sourceRules.length === 0 && targetCosts.length === 0 && adjustment.appliedRules.length === 0) {
+      // Все правила удалены. Пустой save сервер отклоняет (RULES_EMPTY), и раньше
+      // здесь был молчаливый return — снимок оставался, правила возвращались
+      // после перезагрузки. Удаляем снимок отдельной командой, но только если
+      // правила менял пользователь: открытие пустого/legacy тендера ничего не
+      // удаляет.
+      if (serverKnownRulesRef.current === currentRulesSignature) {
+        return;
+      }
+      const cleared = await clearSavedResults(selectedTenderId, selectedTacticId);
+      if (cleared) {
+        clearResults();
+        setServerPrepared(null);
+        setSnapshotState({ status: 'not_configured' });
+        serverKnownRulesRef.current = currentRulesSignature;
+        setSavedRecently(true);
+      }
       return;
     }
     const saved = await saveResults(
@@ -454,7 +479,9 @@ const CostRedistribution: React.FC = () => {
     adjustment.appliedRules,
     currentRulesSignature,
     saveResults,
+    clearSavedResults,
     setResults,
+    clearResults,
   ]);
 
   // Автосохранение правил (дебаунс + mutex) вынесено в хук: там же собраны все

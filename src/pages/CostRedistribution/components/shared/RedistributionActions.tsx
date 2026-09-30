@@ -39,8 +39,8 @@ export const RedistributionActions: React.FC<RedistributionActionsProps> = ({
         </Button>
 
         <Popconfirm
-          title="Очистить результаты?"
-          description="Все несохраненные данные будут потеряны"
+          title="Очистить перераспределение?"
+          description="Правила и сохранённый расчёт будут удалены"
           onConfirm={onClear}
           okText="Да"
           cancelText="Нет"

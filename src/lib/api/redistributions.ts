@@ -179,3 +179,20 @@ export async function saveRedistributionResults(
   );
   return res.data;
 }
+
+/**
+ * Удалить сохранённый снимок перераспределения (все правила удалены).
+ * Go: DELETE /api/v1/redistributions?tender_id=&markup_tactic_id=. Save с
+ * пустыми правилами сервер отклоняет (RULES_EMPTY) — очистка идёт отдельно.
+ * Идемпотентно: отсутствующий снимок → deleted_count = 0.
+ */
+export async function clearRedistributionResults(
+  tenderId: string,
+  tacticId: string,
+): Promise<number> {
+  const res = await apiFetch<{ data: { deleted_count: number } }>(
+    `/api/v1/redistributions?tender_id=${encodeURIComponent(tenderId)}&markup_tactic_id=${encodeURIComponent(tacticId)}`,
+    { method: 'DELETE', timeoutMs: 0 },
+  );
+  return res.data.deleted_count;
+}
