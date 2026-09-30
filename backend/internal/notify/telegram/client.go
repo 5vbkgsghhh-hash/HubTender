@@ -43,6 +43,15 @@ func ConfigFromEnv() Config {
 	}
 }
 
+// TenderConfigFromEnv — отдельный бот «Перечня тендеров»: свой токен и имя
+// (TENDER_BOT_TOKEN, TENDER_BOT_USERNAME), сеть и ссылки — как у основного бота.
+func TenderConfigFromEnv() Config {
+	c := ConfigFromEnv()
+	c.Token = strings.TrimSpace(os.Getenv("TENDER_BOT_TOKEN"))
+	c.BotUsername = strings.TrimPrefix(strings.TrimSpace(os.Getenv("TENDER_BOT_USERNAME")), "@")
+	return c
+}
+
 // Enabled — бот настроен. Без токена поллер и отправка не запускаются.
 func (c Config) Enabled() bool { return c.Token != "" && c.BotUsername != "" }
 
@@ -52,6 +61,8 @@ type APIError struct {
 	Code        int
 	Description string
 	RetryAfter  int
+	// MigrateToChatID — группа стала супергруппой и получила новый id.
+	MigrateToChatID int64
 }
 
 func (e *APIError) Error() string {
@@ -90,7 +101,8 @@ type envelope struct {
 	ErrorCode   int             `json:"error_code"`
 	Description string          `json:"description"`
 	Parameters  *struct {
-		RetryAfter int `json:"retry_after"`
+		RetryAfter      int   `json:"retry_after"`
+		MigrateToChatID int64 `json:"migrate_to_chat_id"`
 	} `json:"parameters"`
 }
 
@@ -120,6 +132,7 @@ func (c *Client) call(ctx context.Context, method string, body any, out any) err
 		apiErr := &APIError{Method: method, Code: env.ErrorCode, Description: env.Description}
 		if env.Parameters != nil {
 			apiErr.RetryAfter = env.Parameters.RetryAfter
+			apiErr.MigrateToChatID = env.Parameters.MigrateToChatID
 		}
 		return apiErr
 	}
@@ -139,10 +152,11 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID int64  `json:"message_id"`
-	Chat      Chat   `json:"chat"`
-	From      *User  `json:"from"`
-	Text      string `json:"text"`
+	MessageID      int64    `json:"message_id"`
+	Chat           Chat     `json:"chat"`
+	From           *User    `json:"from"`
+	Text           string   `json:"text"`
+	ReplyToMessage *Message `json:"reply_to_message"`
 }
 
 type Chat struct {
@@ -151,8 +165,10 @@ type Chat struct {
 }
 
 type User struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
+	ID        int64  `json:"id"`
+	IsBot     bool   `json:"is_bot"`
+	FirstName string `json:"first_name"`
+	Username  string `json:"username"`
 }
 
 type CallbackQuery struct {
@@ -193,6 +209,46 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, html string, key
 	}
 	var msg Message
 	if err := c.call(ctx, "sendMessage", body, &msg); err != nil {
+		return 0, err
+	}
+	return msg.MessageID, nil
+}
+
+// SendReply отправляет HTML-сообщение ответом на сообщение replyTo; keyboard может быть nil.
+func (c *Client) SendReply(ctx context.Context, chatID, replyTo int64, html string, keyboard [][]InlineButton) (int64, error) {
+	body := map[string]any{
+		"chat_id":                  chatID,
+		"text":                     html,
+		"parse_mode":               "HTML",
+		"disable_web_page_preview": true,
+		"reply_parameters":         map[string]any{"message_id": replyTo, "allow_sending_without_reply": true},
+	}
+	if len(keyboard) > 0 {
+		body["reply_markup"] = map[string]any{"inline_keyboard": keyboard}
+	}
+	var msg Message
+	if err := c.call(ctx, "sendMessage", body, &msg); err != nil {
+		return 0, err
+	}
+	return msg.MessageID, nil
+}
+
+// SendForceReply отправляет HTML-сообщение, на которое клиент Telegram сразу
+// открывает ответ; placeholder — подсказка в поле ввода (до 64 символов). В
+// группе поле ответа откроется только у упомянутого в тексте (selective).
+func (c *Client) SendForceReply(ctx context.Context, chatID int64, html, placeholder string) (int64, error) {
+	markup := map[string]any{"force_reply": true, "selective": true}
+	if placeholder != "" {
+		markup["input_field_placeholder"] = placeholder
+	}
+	var msg Message
+	if err := c.call(ctx, "sendMessage", map[string]any{
+		"chat_id":                  chatID,
+		"text":                     html,
+		"parse_mode":               "HTML",
+		"disable_web_page_preview": true,
+		"reply_markup":             markup,
+	}, &msg); err != nil {
 		return 0, err
 	}
 	return msg.MessageID, nil

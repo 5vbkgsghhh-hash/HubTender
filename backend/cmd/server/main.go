@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // часовые пояса бота «Перечня тендеров»: в distroless-образе базы может не быть
 
 	"github.com/getsentry/sentry-go"
 	"github.com/rs/zerolog"
@@ -213,6 +214,10 @@ func main() {
 	if d.telegramBot != nil {
 		go d.telegramBot.RunPoller(rootCtx)
 		go d.telegramBot.RunSender(rootCtx)
+	}
+	if d.tenderBot != nil {
+		go d.tenderBot.RunPoller(rootCtx)
+		go d.tenderBot.Run(rootCtx)
 	}
 
 	// Wait for OS signal or server error.

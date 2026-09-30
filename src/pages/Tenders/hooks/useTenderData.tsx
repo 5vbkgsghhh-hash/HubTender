@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { TenderRegistryWithRelations, TenderStatus, ConstructionScope } from '../../../lib/types';
+import { useRealtimeTopic } from '../../../lib/realtime/useRealtimeTopic';
+import { useRealtimeAwareLoading } from '../../../lib/realtime/useRealtimeAwareLoading';
 import {
   fetchTenderRegistryWithRelations,
   fetchTenderStatuses,
@@ -84,7 +86,7 @@ export const useTenderData = () => {
   const [statuses, setStatuses] = useState<TenderStatus[]>([]);
   const [constructionScopes, setConstructionScopes] = useState<ConstructionScope[]>([]);
   const [tenderNumbers, setTenderNumbers] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useRealtimeAwareLoading(false);
 
   const fetchTenders = async () => {
     setLoading(true);
@@ -140,7 +142,14 @@ export const useTenderData = () => {
     fetchTenderStatuses().then(setStatuses).catch(() => setStatuses([]));
     fetchConstructionScopes().then(setConstructionScopes).catch(() => setConstructionScopes([]));
     fetchTenderNumbers().then(setTenderNumbers).catch(() => setTenderNumbers([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Перечень меняют другие пользователи и Telegram-бот (запись звонка из чата):
+  // без обновления открытая страница перезаписала бы хронологию старой копией.
+  useRealtimeTopic('tenders', () => {
+    void fetchTenders();
+  });
 
   return { tenders, statuses, constructionScopes, tenderNumbers, loading, refetch: fetchTenders };
 };

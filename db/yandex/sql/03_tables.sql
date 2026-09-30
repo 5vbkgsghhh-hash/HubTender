@@ -1029,6 +1029,36 @@ CREATE TABLE IF NOT EXISTS public.verification_notification_items (
     verdict_at timestamp with time zone
 );
 
+-- Telegram-бот «Перечня тендеров» для чата команды (см. 2026_10_telegram_tender_bot.sql).
+CREATE TABLE IF NOT EXISTS public.telegram_tender_reminders (
+    chat_id bigint NOT NULL,
+    registry_id uuid NOT NULL,
+    kind text NOT NULL,
+    due_on date NOT NULL,
+    status text NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0,
+    claimed_until timestamp with time zone,
+    last_error text,
+    telegram_message_id bigint,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    sent_at timestamp with time zone
+);
+
+CREATE TABLE IF NOT EXISTS public.telegram_tender_prompts (
+    chat_id bigint NOT NULL,
+    prompt_message_id bigint NOT NULL,
+    registry_id uuid NOT NULL,
+    entry_type text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.telegram_tender_bot_state (
+    id smallint NOT NULL DEFAULT 1,
+    update_offset bigint NOT NULL DEFAULT 0,
+    updated_at timestamp with time zone NOT NULL DEFAULT now()
+);
+
 -- Машинный доступ к API (страница «Настройки → Доступ к API»).
 -- Секрет ключа в БД не хранится: только SHA-256 хеш и префикс для опознания.
 CREATE TABLE IF NOT EXISTS public.api_keys (

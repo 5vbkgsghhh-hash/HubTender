@@ -165,9 +165,13 @@ export function EditableChronologySection({ tenderId, items, palette, onUpdated 
   const keyRef = useRef(0);
   const [rows, setRows] = useState<Array<ChronologyItem & { _k: number }>>([]);
 
+  // Строки сбрасываются только при смене содержимого: фоновое обновление перечня
+  // (другие пользователи, Telegram-бот) не стирает незаконченную правку.
+  const itemsKey = JSON.stringify(items);
   useEffect(() => {
     setRows(items.map((item) => ({ ...item, _k: keyRef.current++ })));
-  }, [items]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemsKey]);
 
   const persist = async (next: Array<ChronologyItem & { _k: number }>) => {
     const payload = next
@@ -367,9 +371,13 @@ export function EditablePackageSection({ tenderId, items, palette, onUpdated }: 
   const keyRef = useRef(0);
   const [rows, setRows] = useState<Array<TenderPackageItem & { _k: number }>>([]);
 
+  // Строки сбрасываются только при смене содержимого: фоновое обновление перечня
+  // (другие пользователи, Telegram-бот) не стирает незаконченную правку.
+  const itemsKey = JSON.stringify(items);
   useEffect(() => {
     setRows(items.map((item) => ({ ...item, _k: keyRef.current++ })));
-  }, [items]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemsKey]);
 
   const persist = async (next: Array<TenderPackageItem & { _k: number }>) => {
     const payload = next

@@ -37,6 +37,7 @@ type deps struct {
 	verifQueue     *services.RecalcQueue
 	verifRetention *services.VerificationRetentionService
 	telegramBot    *services.TelegramBot
+	tenderBot      *services.TenderBotService
 	telegramH      *handlers.TelegramHandler
 	aiTriageQueue  *services.RecalcQueue
 	verifAIH       *handlers.VerificationAIHandler
@@ -235,6 +236,21 @@ func buildDeps(
 			telegramCfg.Token = ""
 		} else {
 			telegramBot = services.NewTelegramBot(tgClient, telegramRepo, dispatchRepo, qualitySvc, telegramCfg, logger)
+		}
+	}
+	// Бот «Перечня тендеров» — отдельный бот (TENDER_BOT_TOKEN) для чата команды
+	// (TENDER_BOT_CHAT_ID): напоминания, карточка тендера, запись в хронологию.
+	var tenderBot *services.TenderBotService
+	if tbCfg := telegram.TenderConfigFromEnv(); tbCfg.Enabled() {
+		tbClient, tbErr := telegram.NewClient(tbCfg)
+		switch {
+		case tbCfg.Token == telegram.ConfigFromEnv().Token:
+			logger.Error().Msg("tender bot disabled: TENDER_BOT_TOKEN совпадает с TELEGRAM_BOT_TOKEN — нужен отдельный бот")
+		case tbErr != nil:
+			logger.Error().Err(tbErr).Msg("tender bot disabled")
+		default:
+			tenderBot = services.NewTenderBotService(repository.NewTenderBotRepo(pool), tbClient,
+				services.TenderBotConfigFromEnv(tbCfg, logger), logger)
 		}
 	}
 	telegramH := handlers.NewTelegramHandler(
@@ -466,6 +482,7 @@ func buildDeps(
 		verifQueue:     verifQueue,
 		verifRetention: verifRetention,
 		telegramBot:    telegramBot,
+		tenderBot:      tenderBot,
 		telegramH:      telegramH,
 		aiTriageQueue:  aiTriageQueue,
 		verifAIH:       verifAIH,
