@@ -35,7 +35,7 @@ const GRID_COLUMNS: TableColumn[] = [
   { key: 'cost', label: 'Стоимость КП', template: '116px', align: 'center' },
   { key: 'rate', label: '₽/м²', template: '86px', align: 'center' },
   { key: 'submission', label: 'Дата подачи', template: '204px', align: 'center' },
-  { key: 'package', label: 'Тендерный пакет', template: 'minmax(180px, 0.7fr)', align: 'left' },
+  { key: 'package', label: 'Тендерный пакет', template: 'minmax(180px, 0.7fr)', align: 'center' },
   { key: 'status', label: 'Статус / время', template: '132px', align: 'center' },
   { key: 'timeline', label: 'Хронология', template: '84px', align: 'center' },
   { key: 'invite', label: 'Приглашение', template: '82px', align: 'center' },
@@ -233,7 +233,7 @@ export function TenderRow({
         ) : null}
       </div>
 
-      <div style={{ padding: '12px 0', minWidth: 0 }}>
+      <div style={{ padding: '12px 0', minWidth: 0, textAlign: 'center' }}>
         {packageItems.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
             {packageItems.map((item, index) => {
@@ -248,7 +248,7 @@ export function TenderRow({
                   onClick={(event) => event.stopPropagation()}
                   style={{
                     display: 'inline-flex',
-                    alignSelf: 'flex-start',
+                    alignSelf: 'center',
                     padding: '3px 8px',
                     borderRadius: 6,
                     fontSize: 11,
@@ -265,7 +265,7 @@ export function TenderRow({
                   key={`${item.text}-${item.date || 'empty'}-${index}`}
                   style={{
                     display: 'inline-flex',
-                    alignSelf: 'flex-start',
+                    alignSelf: 'center',
                     padding: '3px 8px',
                     borderRadius: 6,
                     fontSize: 11,
