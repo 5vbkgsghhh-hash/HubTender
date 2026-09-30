@@ -196,6 +196,28 @@ func TestApiAccessIntegration_TendersReadScopeAccepted(t *testing.T) {
 	}
 }
 
+func TestApiAccessIntegration_RegistryScopesAccepted(t *testing.T) {
+	// Без миграции 2026_10_tender_registry_api ключ для бота перечня не вставится.
+	pool := newTestPool(t)
+	cleanupApiAccess(t, pool)
+	repo := NewApiAccessRepo(pool)
+
+	gen, _ := apikey.Generate()
+	if _, err := repo.CreateApiKey(context.Background(), CreateApiKeyInput{
+		Name:      "itest-registry",
+		KeyPrefix: gen.Prefix,
+		KeyHash:   gen.Hash,
+		Scopes:    []string{apikey.ScopeRegistryRead, apikey.ScopeRegistryWrite},
+		CreatedBy: apiAccessTestUser,
+	}); err != nil {
+		t.Fatalf("CreateApiKey с registry:*: %v", err)
+	}
+	verified, err := repo.VerifyApiKeyHash(context.Background(), gen.Hash)
+	if err != nil || !apikey.HasScope(verified.Scopes, apikey.ScopeRegistryWrite) {
+		t.Fatalf("область не доехала до рантайма: %+v %v", verified, err)
+	}
+}
+
 func TestApiAccessIntegration_UnknownScopeRejectedByDB(t *testing.T) {
 	pool := newTestPool(t)
 	cleanupApiAccess(t, pool)

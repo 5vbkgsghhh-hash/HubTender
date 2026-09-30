@@ -48,12 +48,19 @@ const (
 	// отметка «Проверка завершена», отметка раздела, текст выжимки. Рассылка
 	// в Telegram и справочник эталонов ключу не открываются.
 	ScopeVerificationWrite = "verification:write"
+	// ScopeRegistryRead — «Перечень тендеров» для Telegram-бота: поиск и
+	// карточка тендера (api/REGISTRY.md). Только чтение.
+	ScopeRegistryRead = "registry:read"
+	// ScopeRegistryWrite — выдача положенных напоминаний (запоминается, что
+	// выдано) и запись звонка/события в хронологию. Ключ, ограниченный списком
+	// тендеров, к перечню не допускается: у перечня нет связи с тендерами.
+	ScopeRegistryWrite = "registry:write"
 )
 
 // KnownScopes — все допустимые области.
 var KnownScopes = []string{
 	ScopeArchiveRead, ScopeArchiveWrite, ScopeTendersRead, ScopeTendersWrite,
-	ScopeVerificationRead, ScopeVerificationWrite,
+	ScopeVerificationRead, ScopeVerificationWrite, ScopeRegistryRead, ScopeRegistryWrite,
 }
 
 func isKnownScope(s string) bool {

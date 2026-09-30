@@ -59,7 +59,7 @@ func (h *ApiAccessHandler) ListKeys(w http.ResponseWriter, r *http.Request) {
 
 type createKeyReq struct {
 	Name             string   `json:"name"               validate:"required,min=1,max=120"`
-	Scopes           []string `json:"scopes"             validate:"required,min=1,dive,oneof=archive:read archive:write tenders:read tenders:write verification:read verification:write"`
+	Scopes           []string `json:"scopes"             validate:"required,min=1,dive,oneof=archive:read archive:write tenders:read tenders:write verification:read verification:write registry:read registry:write"`
 	AllowedTenderIDs []string `json:"allowed_tender_ids" validate:"omitempty,dive,uuid"`
 	ExpiresAt        *string  `json:"expires_at"`
 }
@@ -82,6 +82,10 @@ func (h *ApiAccessHandler) CreateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.validate.Struct(req); err != nil {
 		apierr.BadRequest("validation failed: " + err.Error()).Render(w)
+		return
+	}
+	if len(req.AllowedTenderIDs) > 0 && hasRegistryScope(req.Scopes) {
+		apierr.BadRequest("области registry:* не сочетаются со списком тендеров: у перечня нет связи с тендерами").Render(w)
 		return
 	}
 
@@ -221,4 +225,16 @@ func (h *ApiAccessHandler) ListCallLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderJSON(w, r, http.StatusOK, dataEnvelope{Data: entries})
+}
+
+// hasRegistryScope — среди областей есть registry:*. Ключ с ограничением по
+// тендерам к перечню не допускается (гейт маршрута ответит 403), поэтому такой
+// ключ не выпускаем вовсе.
+func hasRegistryScope(scopes []string) bool {
+	for _, s := range scopes {
+		if s == apikey.ScopeRegistryRead || s == apikey.ScopeRegistryWrite {
+			return true
+		}
+	}
+	return false
 }

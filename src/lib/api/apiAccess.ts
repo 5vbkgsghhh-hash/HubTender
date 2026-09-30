@@ -11,7 +11,9 @@ export type ApiKeyScope =
   | 'tenders:read'
   | 'tenders:write'
   | 'verification:read'
-  | 'verification:write';
+  | 'verification:write'
+  | 'registry:read'
+  | 'registry:write';
 export type ApiKeyStatus = 'active' | 'revoked' | 'expired';
 
 export interface ApiKey {

@@ -1,27 +1,32 @@
 package telegram
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
 const registryID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 
-func TestParseTenderCallback(t *testing.T) {
+func TestTenderCallbackData(t *testing.T) {
 	for _, action := range []string{ActionTenderInfo, ActionTenderCall, ActionTenderEvent} {
-		data := TenderCallbackData(action, strings.ToUpper(registryID))
-		if len(data) > 64 {
-			t.Fatalf("callback_data длиннее 64 байт: %q", data)
-		}
-		a, id, ok := ParseTenderCallback(data)
-		if !ok || a != action || id != registryID {
-			t.Fatalf("%q → %q %q %v", data, a, id, ok)
+		if data := TenderCallbackData(action, registryID); len(data) > 64 || data != action+":"+registryID {
+			t.Fatalf("callback_data: %q", data)
 		}
 	}
-	for _, bad := range []string{"", "ti", "a:" + registryID, "e:" + registryID, "tx:" + registryID, "ti:1", "ti:" + registryID + ":x"} {
-		if _, _, ok := ParseTenderCallback(bad); ok {
-			t.Fatalf("принят чужой callback %q", bad)
-		}
+}
+
+func TestPayloadJSON(t *testing.T) {
+	raw, err := json.Marshal(Payload("x", nil))
+	if err != nil || string(raw) != `{"text":"x","parse_mode":"HTML"}` {
+		t.Fatalf("сообщение без кнопок: %s %v", raw, err)
+	}
+	raw, _ = json.Marshal(Payload("x", TenderKeyboard(TenderView{ID: registryID, Link: "https://tender.example/tenders"})))
+	want := `{"text":"x","parse_mode":"HTML","reply_markup":{"inline_keyboard":[[` +
+		`{"text":"📞 Звонок","callback_data":"tc:` + registryID + `"},{"text":"📝 Событие","callback_data":"te:` + registryID + `"}],` +
+		`[{"text":"Открыть перечень","url":"https://tender.example/tenders"}]]}}`
+	if string(raw) != want {
+		t.Fatalf("сообщение с кнопками:\n%s\n%s", raw, want)
 	}
 }
 
@@ -128,41 +133,11 @@ func TestRenderSearchResults(t *testing.T) {
 	}
 }
 
-func TestRenderPromptAndSaved(t *testing.T) {
-	m := Mention(User{ID: 42, FirstName: "Иван <Админ>"})
-	if m != `<a href="tg://user?id=42">Иван &lt;Админ&gt;</a>` {
-		t.Fatalf("упоминание: %s", m)
-	}
-	if Mention(User{ID: 7, Username: "ivan"}) != `<a href="tg://user?id=7">@ivan</a>` || !strings.Contains(Mention(User{ID: 7}), "коллега") {
-		t.Fatal("упоминание без имени")
-	}
-	if p := RenderPrompt("ЖК <Ода>", true, m); !strings.Contains(p, "Звонок") || strings.Contains(p, "<Ода>") ||
-		!strings.Contains(p, m+", ответьте на это сообщение") {
-		t.Fatalf("запрос: %s", p)
-	}
-	if p := RenderPrompt("ЖК", false, m); !strings.Contains(p, "Событие") {
-		t.Fatalf("запрос события: %s", p)
-	}
-	if h := RenderChatIDHint(-1001234567890); !strings.Contains(h, "<code>-1001234567890</code>") || !strings.Contains(h, "TENDER_BOT_CHAT_ID") {
-		t.Fatalf("подсказка id чата: %s", h)
-	}
+func TestRenderEntrySaved(t *testing.T) {
 	if s := RenderEntrySaved("ЖК", true, "a & b"); !strings.Contains(s, "📞 Звонок — a &amp; b") {
-		t.Fatalf("подтверждение: %s", s)
+		t.Fatalf("подтверждение звонка: %s", s)
 	}
-}
-
-func TestTenderConfigFromEnv(t *testing.T) {
-	t.Setenv("TELEGRAM_BOT_TOKEN", "1:verification")
-	t.Setenv("TELEGRAM_BOT_USERNAME", "check_bot")
-	t.Setenv("TENDER_BOT_TOKEN", " 2:tenders ")
-	t.Setenv("TENDER_BOT_USERNAME", "@tenders_bot")
-	t.Setenv("APP_BASE_URL", "https://tender.example/")
-	c := TenderConfigFromEnv()
-	if c.Token != "2:tenders" || c.BotUsername != "tenders_bot" || c.AppBaseURL != "https://tender.example" || !c.Enabled() {
-		t.Fatalf("конфиг бота перечня: %+v", c)
-	}
-	t.Setenv("TENDER_BOT_TOKEN", "")
-	if TenderConfigFromEnv().Enabled() {
-		t.Fatal("без TENDER_BOT_TOKEN бот перечня не включается")
+	if s := RenderEntrySaved("ЖК <1>", false, "x"); !strings.Contains(s, "«ЖК &lt;1&gt;»: 📝 Событие — x") {
+		t.Fatalf("подтверждение события: %s", s)
 	}
 }

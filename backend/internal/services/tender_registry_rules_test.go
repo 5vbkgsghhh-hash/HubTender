@@ -99,12 +99,12 @@ func TestEvalCall(t *testing.T) {
 			`[{"date":"2026-09-10T09:00:00.000Z","text":"звонок","type":"call_follow_up"}]`, true, 20, true},
 	}
 	for _, c := range cases {
-		ev := evalCall(repository.BotTender{SubmissionDate: c.submission}, chrono(c.chrono), now, tbMSK)
+		ev := evalCall(repository.RegistryTender{SubmissionDate: c.submission}, chrono(c.chrono), now, tbMSK)
 		if !ev.Known || ev.Due != c.due || ev.Days != c.days || ev.FromCall != c.fromCall {
 			t.Fatalf("%s: %+v", c.name, ev)
 		}
 	}
-	if ev := evalCall(repository.BotTender{}, nil, now, tbMSK); ev.Known || ev.Due {
+	if ev := evalCall(repository.RegistryTender{}, nil, now, tbMSK); ev.Known || ev.Due {
 		t.Fatalf("без дат напоминать нечего: %+v", ev)
 	}
 }
@@ -112,7 +112,7 @@ func TestEvalCall(t *testing.T) {
 func TestEvalPD(t *testing.T) {
 	entries := parseChronology([]byte(`[{"date":"2026-08-01T09:00:00.000Z","text":"раньше"},
 		{"date":"2026-08-15T09:00:00.000Z","text":"ждём ПД"}, {"date":null,"text":"старое"}]`), tbMSK)
-	tender := repository.BotTender{CreatedAt: tbPtr(tbAt(2026, 2, 11, 12, 0))}
+	tender := repository.RegistryTender{CreatedAt: tbPtr(tbAt(2026, 2, 11, 12, 0))}
 	cases := []struct {
 		now    time.Time
 		due    bool
@@ -148,7 +148,7 @@ func TestEvalPD(t *testing.T) {
 	if ev := evalPD(tender, noDates, tbAt(2026, 9, 11, 9, 0), tbMSK); !ev.Due || !ev.FromCreated || ev.Months != 7 {
 		t.Fatalf("без датированных записей — от добавления в перечень: %+v", ev)
 	}
-	if ev := evalPD(repository.BotTender{}, noDates, tbAt(2026, 9, 11, 9, 0), tbMSK); ev.Due {
+	if ev := evalPD(repository.RegistryTender{}, noDates, tbAt(2026, 9, 11, 9, 0), tbMSK); ev.Due {
 		t.Fatalf("без дат вообще напоминать не от чего: %+v", ev)
 	}
 }
@@ -173,7 +173,7 @@ func TestAddMonthsClamped(t *testing.T) {
 }
 
 func TestMatchTenders(t *testing.T) {
-	tenders := []repository.BotTender{
+	tenders := []repository.RegistryTender{
 		{ID: "a", TenderNumber: tbPtr("3301"), Title: "Дом", ClientName: "Ёлка"},
 		{ID: "b", TenderNumber: tbPtr("330"), Title: "ЖК «Ода»", ClientName: "ООО Ромашка"},
 		{ID: "c", Title: "Ода-2 корпус", ClientName: "ИП"},

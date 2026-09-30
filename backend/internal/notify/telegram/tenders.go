@@ -13,6 +13,28 @@ const (
 	ActionTenderEvent = "te"
 )
 
+// InlineKeyboard — reply_markup сообщения Telegram.
+type InlineKeyboard struct {
+	InlineKeyboard [][]InlineButton `json:"inline_keyboard"`
+}
+
+// MessagePayload — готовое сообщение для sendMessage: бот подставляет chat_id
+// и отправляет как есть.
+type MessagePayload struct {
+	Text        string          `json:"text"`
+	ParseMode   string          `json:"parse_mode"`
+	ReplyMarkup *InlineKeyboard `json:"reply_markup,omitempty"`
+}
+
+// Payload — HTML-сообщение; без кнопок reply_markup не выводится.
+func Payload(text string, keyboard [][]InlineButton) MessagePayload {
+	m := MessagePayload{Text: text, ParseMode: "HTML"}
+	if len(keyboard) > 0 {
+		m.ReplyMarkup = &InlineKeyboard{InlineKeyboard: keyboard}
+	}
+	return m
+}
+
 // MaxSearchResults — сколько найденных тендеров показывать кнопками.
 const MaxSearchResults = 10
 
@@ -24,37 +46,9 @@ const (
 	maxButtonRunes = 60
 )
 
-// TenderBotHelp — что умеет бот «Перечня тендеров» в чате команды.
-const TenderBotHelp = "Бот «Перечня тендеров» TenderHUB.\n" +
-	"• Напоминания приходят сами: по «Направлено» — каждый день, если больше 7 дней без звонка; " +
-	"по «Ожидание ПД» — раз в месяц.\n" +
-	"• /t номер или часть названия либо заказчика — карточка тендера, например: /t 330\n" +
-	"• Кнопки «📞 Звонок» и «📝 Событие» под сообщением: нажмите и ответьте на запрос бота — " +
-	"текст попадёт в хронологию."
-
-// TenderSearchUsage — /t без запроса.
-const TenderSearchUsage = "Напишите /t и номер тендера или часть названия либо заказчика, например: /t 330"
-
-// TenderReplyHint — ответили на сообщение бота, но не на запрос записи.
-const TenderReplyHint = "Чтобы записать в хронологию, нажмите «📞 Звонок» или «📝 Событие» под сообщением " +
-	"и ответьте на запрос бота."
-
 // TenderCallbackData — «tc:<uuid строки перечня>», 39 байт при лимите 64.
+// Кнопки обрабатывает внешний бот (api/REGISTRY.md).
 func TenderCallbackData(action, registryID string) string { return action + ":" + registryID }
-
-// ParseTenderCallback разбирает кнопки перечня; ok=false — чужие данные
-// (например, кнопки замечаний проверки).
-func ParseTenderCallback(data string) (action, registryID string, ok bool) {
-	action, id, found := strings.Cut(data, ":")
-	if !found || !uuidRe.MatchString(id) {
-		return "", "", false
-	}
-	switch action {
-	case ActionTenderInfo, ActionTenderCall, ActionTenderEvent:
-		return action, strings.ToLower(id), true
-	}
-	return "", "", false
-}
 
 // TenderEntry — запись хронологии для вывода.
 type TenderEntry struct {
@@ -259,35 +253,6 @@ func RenderSearchResults(query string, found []TenderView, total int) (string, [
 func RenderNotFound(query string) string {
 	return fmt.Sprintf("В перечне тендеров нет совпадений с «%s». "+
 		"Попробуйте номер тендера или часть названия либо заказчика.", esc(query, 100))
-}
-
-// RenderChatIDHint — бота позвали в чат, который не подключён: только id чата
-// для настройки TENDER_BOT_CHAT_ID, никаких данных перечня.
-func RenderChatIDHint(chatID int64) string {
-	return fmt.Sprintf("Этот чат не подключён к боту «Перечня тендеров». ID чата: <code>%d</code> — "+
-		"укажите его в настройке TENDER_BOT_CHAT_ID на сервере.", chatID)
-}
-
-// Mention — упоминание пользователя в HTML-сообщении (по id, без @username).
-func Mention(u User) string {
-	name := strings.TrimSpace(u.FirstName)
-	if name == "" && u.Username != "" {
-		name = "@" + u.Username
-	}
-	if name == "" {
-		name = "коллега"
-	}
-	return fmt.Sprintf(`<a href="tg://user?id=%d">%s</a>`, u.ID, esc(name, 64))
-}
-
-// RenderPrompt — просьба ответить текстом записи; mention — кто нажал кнопку.
-func RenderPrompt(title string, call bool, mention string) string {
-	kind, what := "📝 <b>Событие</b>", "что произошло"
-	if call {
-		kind, what = "📞 <b>Звонок</b>", "чем закончился звонок"
-	}
-	return fmt.Sprintf("%s по тендеру «%s»\n%s, ответьте на это сообщение: %s. Текст попадёт в хронологию.",
-		kind, esc(title, maxTitleRunes), mention, what)
 }
 
 // RenderEntrySaved — подтверждение записи в хронологию.

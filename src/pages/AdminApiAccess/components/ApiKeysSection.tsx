@@ -30,6 +30,8 @@ const SCOPE_LABEL: Record<string, string> = {
   'tenders:write': 'Запись строк тендера',
   'verification:read': 'Чтение проверки данных',
   'verification:write': 'Действия проверяющего',
+  'registry:read': 'Чтение перечня тендеров',
+  'registry:write': 'Хронология и напоминания перечня',
 };
 
 export const ApiKeysSection: FC<IApiKeysSectionProps> = ({

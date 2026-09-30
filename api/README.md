@@ -9,6 +9,8 @@ TenderHUB по ключу `thk_…` и дать ему **просмотр тен
 | [ENDPOINTS.md](ENDPOINTS.md) | справочник эндпоинтов и полей ответов |
 | [ASSISTANTS.md](ASSISTANTS.md) | пошаговое подключение: Cursor, Codex, Claude Code, curl/OpenAPI |
 | [AGENT_INSTRUCTIONS.md](AGENT_INSTRUCTIONS.md) | готовый текст инструкции для агента — копировать в `AGENTS.md` / правило Cursor / `CLAUDE.md` |
+| [VERIFICATION.md](VERIFICATION.md) | «Проверка данных» по ключу: находки, вердикты, разделы |
+| [REGISTRY.md](REGISTRY.md) | «Перечень тендеров» для Telegram-бота: поиск, карточка, напоминания, запись в хронологию |
 
 Живая спецификация OpenAPI 3.1: `GET /api/v1/archive/openapi.yaml`
 (исходник — [`backend/internal/handlers/openapi/archive.yaml`](../backend/internal/handlers/openapi/archive.yaml)).
@@ -131,8 +133,11 @@ node scripts/archive-api.mjs estimate x --position=<position_id>   # одна п
 | `archive:read` | поиск по историческим сметам, подбор аналогов, состав исторической позиции |
 | `archive:write` | сборка сметы из исторических позиций (`compose`) — запись в тендер |
 | `tenders:write` | прямое создание/правка строк BOQ и пересчёт итогов позиции — запись в тендер |
+| `verification:read` / `verification:write` | «Проверка данных»: находки и вердикты — см. [VERIFICATION.md](VERIFICATION.md) |
+| `registry:read` / `registry:write` | «Перечень тендеров» для Telegram-бота: поиск и карточка / напоминания и запись в хронологию — см. [REGISTRY.md](REGISTRY.md) |
 
-Ограничение по списку тендеров действует для всех областей. Управление ключами и
+Ограничение по списку тендеров действует для всех областей, кроме `registry:*`: у
+перечня нет связи с тендерами, и ключ со списком тендеров к нему не допускается. Управление ключами и
 настройками (`/api/v1/admin/api-access/*`) и остальные эндпоинты портала ключу
 недоступны — только JWT пользователя.
 

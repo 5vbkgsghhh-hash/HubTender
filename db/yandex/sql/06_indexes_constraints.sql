@@ -735,7 +735,7 @@ CREATE INDEX IF NOT EXISTS verification_notification_items_notification_idx
 CREATE INDEX IF NOT EXISTS verification_notification_items_finding_idx
     ON public.verification_notification_items (finding_id);
 
--- ----- telegram: бот «Перечня тендеров» (чат команды) ----------------------
+-- ----- журнал напоминаний «Перечня тендеров» (API для внешнего бота) -------
 ALTER TABLE public.telegram_tender_reminders ADD CONSTRAINT telegram_tender_reminders_pkey
     PRIMARY KEY (chat_id, registry_id, kind, due_on);
 ALTER TABLE public.telegram_tender_reminders ADD CONSTRAINT telegram_tender_reminders_kind_check
@@ -749,16 +749,6 @@ CREATE INDEX IF NOT EXISTS telegram_tender_reminders_pending_idx
 CREATE INDEX IF NOT EXISTS telegram_tender_reminders_registry_idx
     ON public.telegram_tender_reminders (registry_id);
 
-ALTER TABLE public.telegram_tender_prompts ADD CONSTRAINT telegram_tender_prompts_pkey
-    PRIMARY KEY (chat_id, prompt_message_id);
-ALTER TABLE public.telegram_tender_prompts ADD CONSTRAINT telegram_tender_prompts_entry_type_check
-    CHECK (entry_type IN ('call_follow_up', 'default'));
-ALTER TABLE public.telegram_tender_prompts ADD CONSTRAINT telegram_tender_prompts_registry_fkey
-    FOREIGN KEY (registry_id) REFERENCES public.tender_registry(id) ON DELETE CASCADE;
-
-ALTER TABLE public.telegram_tender_bot_state ADD CONSTRAINT telegram_tender_bot_state_pkey PRIMARY KEY (id);
-ALTER TABLE public.telegram_tender_bot_state ADD CONSTRAINT telegram_tender_bot_state_single_check CHECK (id = 1);
-
 -- ─── Машинный доступ к API ──────────────────────────────────────────────────
 ALTER TABLE public.api_keys
     ADD CONSTRAINT api_keys_pkey PRIMARY KEY (id);
@@ -771,7 +761,8 @@ ALTER TABLE public.api_keys
     ADD CONSTRAINT api_keys_scopes_chk
     CHECK (cardinality(scopes) > 0
            AND scopes <@ ARRAY['archive:read', 'archive:write', 'tenders:read', 'tenders:write',
-                               'verification:read', 'verification:write']::text[]);
+                               'verification:read', 'verification:write',
+                               'registry:read', 'registry:write']::text[]);
 ALTER TABLE public.api_keys
     ADD CONSTRAINT api_keys_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
 ALTER TABLE public.api_keys

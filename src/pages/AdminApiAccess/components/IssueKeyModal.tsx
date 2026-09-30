@@ -123,7 +123,7 @@ export const IssueKeyModal: FC<IIssueKeyModalProps> = ({
           name="scopes"
           label="Права"
           rules={[{ required: true, message: 'Выберите хотя бы одно право' }]}
-          extra="Чтение тендеров и смет — список тендеров, позиции, итоги и строки смет (только просмотр). Сборка смет и запись строк означают запись в тендер: строки создаются от имени владельца ключа. Чтение проверки данных — находки правил, разделы, эталоны и выжимка; действия проверяющего — вердикты, отметки проверки и текст выжимки от имени владельца ключа."
+          extra="Чтение тендеров и смет — список тендеров, позиции, итоги и строки смет (только просмотр). Сборка смет и запись строк означают запись в тендер: строки создаются от имени владельца ключа. Чтение проверки данных — находки правил, разделы, эталоны и выжимка; действия проверяющего — вердикты, отметки проверки и текст выжимки от имени владельца ключа. Перечень тендеров — для Telegram-бота: поиск и карточка тендера; хронология и напоминания — выдача напоминаний и запись звонков/событий в хронологию (со списком тендеров не сочетается)."
         >
           <Checkbox.Group
             options={[
@@ -133,6 +133,8 @@ export const IssueKeyModal: FC<IIssueKeyModalProps> = ({
               { label: 'Запись строк тендера', value: 'tenders:write' },
               { label: 'Чтение проверки данных', value: 'verification:read' },
               { label: 'Действия проверяющего', value: 'verification:write' },
+              { label: 'Чтение перечня тендеров', value: 'registry:read' },
+              { label: 'Хронология и напоминания перечня', value: 'registry:write' },
             ]}
           />
         </Form.Item>
@@ -141,6 +143,18 @@ export const IssueKeyModal: FC<IIssueKeyModalProps> = ({
           name="allowedTenderIds"
           label="Разрешённые тендеры"
           extra="ID через запятую или с новой строки. Пусто — доступны все тендеры."
+          dependencies={['scopes']}
+          rules={[
+            ({ getFieldValue }) => ({
+              validator: (_, value?: string) => {
+                const scopes: ApiKeyScope[] = getFieldValue('scopes') || [];
+                const hasRegistry = scopes.some((s) => s.startsWith('registry:'));
+                return hasRegistry && value?.trim()
+                  ? Promise.reject(new Error('Перечень тендеров не связан с тендерами — для него список тендеров не задаётся'))
+                  : Promise.resolve();
+              },
+            }),
+          ]}
         >
           <Input.TextArea rows={2} placeholder="необязательно" />
         </Form.Item>

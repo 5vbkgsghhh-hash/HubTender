@@ -14,7 +14,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/repository"
 )
 
-// Правила «Перечня тендеров» для Telegram-бота — порт src/pages/Tenders/utils/tenderMonitor.ts.
+// Правила «Перечня тендеров» для API Telegram-бота — порт src/pages/Tenders/utils/tenderMonitor.ts.
 // Держать в синхроне со страницей: статус (getDashboardStatus), контрольная дата
 // звонка (getControlDate) и порог «Требуют звонка» (shouldShowCallAction).
 
@@ -202,7 +202,7 @@ type callEval struct {
 // evalCall — getControlDate + shouldShowCallAction: контрольная дата — позднейшая
 // из подачи КП и последнего звонка; звонить пора, если прошло больше
 // callThresholdDays календарных дней. Обычное событие отсчёт не сбрасывает.
-func evalCall(t repository.BotTender, entries []chronoEntry, now time.Time, loc *time.Location) callEval {
+func evalCall(t repository.RegistryTender, entries []chronoEntry, now time.Time, loc *time.Location) callEval {
 	var since *time.Time
 	fromCall := false
 	if t.SubmissionDate != nil {
@@ -235,7 +235,7 @@ type pdEval struct {
 // таких — от добавления в перечень). Напоминание — в «месячную годовщину»
 // (31-е → последний день короткого месяца); пропущенную догоняем не дольше
 // pdCatchUpDays дней, чтобы первый запуск не завалил чат старыми тендерами.
-func evalPD(t repository.BotTender, entries []chronoEntry, now time.Time, loc *time.Location) pdEval {
+func evalPD(t repository.RegistryTender, entries []chronoEntry, now time.Time, loc *time.Location) pdEval {
 	var anchor *time.Time
 	for _, e := range entries {
 		if e.At != nil && (anchor == nil || e.At.After(*anchor)) {
@@ -291,12 +291,12 @@ func normalizeSearch(s string) string {
 
 // matchTenders — тендеры по запросу: сначала точный номер, затем начало номера
 // или названия, затем вхождение в номер, название или заказчика.
-func matchTenders(tenders []repository.BotTender, query string) []repository.BotTender {
+func matchTenders(tenders []repository.RegistryTender, query string) []repository.RegistryTender {
 	q := normalizeSearch(query)
 	if q == "" {
 		return nil
 	}
-	var exact, prefix, contains []repository.BotTender
+	var exact, prefix, contains []repository.RegistryTender
 	for _, t := range tenders {
 		num, title, client := normalizeSearch(strOrEmpty(t.TenderNumber)), normalizeSearch(t.Title), normalizeSearch(t.ClientName)
 		switch {
