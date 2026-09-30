@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/su10/hubtender/backend/internal/calc"
 )
 
 // changedFields — сравнение входов matched-строки (§5). Финансовые totals
@@ -115,7 +117,13 @@ func diffConfiguration(cur, base *TenderState) []ConfigChange {
 
 	distStr := func(d *Distribution) string {
 		if d == nil {
-			return ""
+			// Нет записи → расчёт идёт по дефолту Конструктора наценок.
+			def := calc.DefaultPricingDistribution
+			d = &Distribution{
+				BasicMaterialBase: string(def.BasicMaterialBaseTarget), BasicMaterialMarkup: string(def.BasicMaterialMarkupTarget),
+				AuxiliaryMaterialBase: string(def.AuxiliaryMaterialBaseTarget), AuxiliaryMaterialMark: string(def.AuxiliaryMaterialMarkupTarget),
+				WorkBase: string(def.WorkBaseTarget), WorkMarkup: string(def.WorkMarkupTarget),
+			}
 		}
 		return strings.Join([]string{
 			d.BasicMaterialBase, d.BasicMaterialMarkup,

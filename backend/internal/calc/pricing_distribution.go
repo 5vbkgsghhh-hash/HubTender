@@ -77,11 +77,31 @@ type PricingDistribution struct {
 	ComponentWorkMarkupTarget DistTarget
 }
 
+// DefaultPricingDistribution — распределение, которое Конструктор наценок
+// (вкладка «Ценообразование») показывает для тендера без сохранённой записи.
+// Применяется, когда tender_pricing_distribution для тендера отсутствует.
+// Держать 1:1 с DEFAULT_PRICING_DISTRIBUTION в calculation.ts.
+var DefaultPricingDistribution = PricingDistribution{
+	BasicMaterialBaseTarget:                  TargetMaterial,
+	BasicMaterialMarkupTarget:                TargetWork,
+	AuxiliaryMaterialBaseTarget:              TargetWork,
+	AuxiliaryMaterialMarkupTarget:            TargetWork,
+	ComponentMaterialBaseTarget:              TargetWork,
+	ComponentMaterialMarkupTarget:            TargetWork,
+	SubcontractBasicMaterialBaseTarget:       TargetMaterial,
+	SubcontractBasicMaterialMarkupTarget:     TargetWork,
+	SubcontractAuxiliaryMaterialBaseTarget:   TargetWork,
+	SubcontractAuxiliaryMaterialMarkupTarget: TargetWork,
+	WorkBaseTarget:                           TargetWork,
+	WorkMarkupTarget:                         TargetWork,
+	ComponentWorkBaseTarget:                  TargetWork,
+	ComponentWorkMarkupTarget:                TargetWork,
+}
+
 // ApplyPricingDistribution splits a commercialCost between material_cost and
 // work_cost columns. baseAmount is the pre-markup cost; markup = commercial - base.
 //
-// If distribution == nil the TS "old logic" kicks in: materials → material column,
-// works → work column (all of commercialCost).
+// If distribution == nil DefaultPricingDistribution is applied.
 //
 // Composite (комп.) and subcontract-special cases use optional fields with
 // fallbacks per the TS switch.
@@ -91,16 +111,7 @@ func ApplyPricingDistribution(
 	distribution *PricingDistribution,
 ) (materialCost, workCost float64) {
 	if distribution == nil {
-		// суб-мат основн.: base → material column, markup → work column (matches
-		// the MarkupConstructor default the TS applyPricingDistribution encodes).
-		if boqItemType == BoqSubMat && materialType != materialTypeAuxiliary {
-			return baseAmount, commercialCost - baseAmount
-		}
-		isMat := boqItemType == BoqMat || boqItemType == BoqSubMat || boqItemType == BoqMatKomp
-		if isMat {
-			return commercialCost, 0
-		}
-		return 0, commercialCost
+		distribution = &DefaultPricingDistribution
 	}
 
 	markup := commercialCost - baseAmount

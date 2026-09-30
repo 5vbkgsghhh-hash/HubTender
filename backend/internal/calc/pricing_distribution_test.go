@@ -2,15 +2,26 @@ package calc
 
 import "testing"
 
-// nil distribution — old logic: materials → material column, works → work column.
+// nil distribution — дефолт Конструктора наценок (DefaultPricingDistribution).
 func TestApplyPricingDistribution_NilFallback(t *testing.T) {
-	m, w := ApplyPricingDistribution(100, 150, BoqMat, "", nil)
-	if m != 150 || w != 0 {
-		t.Errorf("material nil fallback: got m=%v w=%v, want m=150 w=0", m, w)
+	cases := []struct {
+		name, boqType, matType string
+		wantM, wantW           float64
+	}{
+		{"мат основн.: база → мат, наценка → раб", BoqMat, "основн.", 100, 50},
+		{"мат вспомогат. → раб", BoqMat, "вспомогат.", 0, 150},
+		{"мат-комп. → раб", BoqMatKomp, "основн.", 0, 150},
+		{"суб-мат основн.: база → мат, наценка → раб", BoqSubMat, "основн.", 100, 50},
+		{"суб-мат вспомогат. → раб", BoqSubMat, "вспомогат.", 0, 150},
+		{"раб → раб", BoqRab, "", 0, 150},
+		{"суб-раб → раб", BoqSubRab, "", 0, 150},
+		{"раб-комп. → раб", BoqRabKomp, "", 0, 150},
 	}
-	m, w = ApplyPricingDistribution(100, 150, BoqRab, "", nil)
-	if m != 0 || w != 150 {
-		t.Errorf("work nil fallback: got m=%v w=%v, want m=0 w=150", m, w)
+	for _, c := range cases {
+		m, w := ApplyPricingDistribution(100, 150, c.boqType, c.matType, nil)
+		if m != c.wantM || w != c.wantW {
+			t.Errorf("%s: got m=%v w=%v, want m=%v w=%v", c.name, m, w, c.wantM, c.wantW)
+		}
 	}
 }
 

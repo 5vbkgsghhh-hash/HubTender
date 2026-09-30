@@ -52,6 +52,28 @@ export interface PricingDistribution {
 }
 
 /**
+ * Распределение по умолчанию — то, что Конструктор наценок (вкладка
+ * «Ценообразование») показывает для тендера без сохранённой записи.
+ * Держать 1:1 с calc.DefaultPricingDistribution на бэкенде.
+ */
+export const DEFAULT_PRICING_DISTRIBUTION: Readonly<Required<PricingDistribution>> = {
+  basic_material_base_target: 'material',
+  basic_material_markup_target: 'work',
+  auxiliary_material_base_target: 'work',
+  auxiliary_material_markup_target: 'work',
+  component_material_base_target: 'work',
+  component_material_markup_target: 'work',
+  subcontract_basic_material_base_target: 'material',
+  subcontract_basic_material_markup_target: 'work',
+  subcontract_auxiliary_material_base_target: 'work',
+  subcontract_auxiliary_material_markup_target: 'work',
+  work_base_target: 'work',
+  work_markup_target: 'work',
+  component_work_base_target: 'work',
+  component_work_markup_target: 'work',
+};
+
+/**
  * Загружает настройки ценообразования для тендера
  */
 export async function loadPricingDistribution(tenderId: string): Promise<PricingDistribution | null> {
@@ -100,22 +122,10 @@ export function applyPricingDistribution(
   commercialCost: number,
   boqItemType: string,
   materialTypeField: string | null | undefined,
-  distribution: PricingDistribution | null
+  distributionOrNull: PricingDistribution | null
 ): { materialCost: number; workCost: number } {
-  // Если настроек нет, используем дефолты, согласованные с MarkupConstructor:
-  // для суб-мат основн. база → материалы КП, наценки → работа КП. Иначе —
-  // материалы целиком в материалы, работы целиком в работы.
-  if (!distribution) {
-    if (boqItemType === 'суб-мат' && materialTypeField !== 'вспомогат.') {
-      const markup = commercialCost - baseAmount;
-      return { materialCost: baseAmount, workCost: markup };
-    }
-    const isMaterial = ['мат', 'суб-мат', 'мат-комп.'].includes(boqItemType);
-    return {
-      materialCost: isMaterial ? commercialCost : 0,
-      workCost: isMaterial ? 0 : commercialCost
-    };
-  }
+  // Настроек нет — применяем дефолт, который показывает Конструктор наценок.
+  const distribution = distributionOrNull ?? DEFAULT_PRICING_DISTRIBUTION;
 
   // Вычисляем базовую стоимость и наценку
   const markup = commercialCost - baseAmount;

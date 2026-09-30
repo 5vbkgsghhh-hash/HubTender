@@ -11,7 +11,7 @@ func numStep(mult float64) SequenceStep {
 	return SequenceStep{BaseIndex: -1, Action1: "multiply", Operand1Type: "number", Operand1Key: mult}
 }
 
-// Material, no distribution → whole commercial cost to material column.
+// Material, no distribution → дефолт Конструктора: база → материалы, наценка → работы.
 func TestCalculateBoqItemCost_MaterialNilDistribution(t *testing.T) {
 	seqs := map[string][]SequenceStep{BoqMat: {numStep(1.25)}}
 	cache := map[string]float64{}
@@ -21,8 +21,8 @@ func TestCalculateBoqItemCost_MaterialNilDistribution(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if !approx(res.MaterialCost, 125) || !approx(res.WorkCost, 0) {
-		t.Errorf("got mat=%v work=%v, want 125/0", res.MaterialCost, res.WorkCost)
+	if !approx(res.MaterialCost, 100) || !approx(res.WorkCost, 25) {
+		t.Errorf("got mat=%v work=%v, want 100/25", res.MaterialCost, res.WorkCost)
 	}
 	if !approx(res.MarkupCoefficient, 1.25) {
 		t.Errorf("coef got %v, want 1.25", res.MarkupCoefficient)
