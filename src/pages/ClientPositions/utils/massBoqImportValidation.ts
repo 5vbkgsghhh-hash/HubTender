@@ -1,5 +1,6 @@
 import {
   ParsedBoqItem,
+  ParsedAdditionalPosition,
   PositionUpdateData,
   ValidationError,
   ValidationResult,
@@ -12,12 +13,13 @@ import {
   findCostCategoryId,
 } from './massBoqImportUtils';
 import { validateBoqRowBasics } from '../../../utils/boq/importRowValidation';
+import { validateAdditionalPositions, type AdditionalValidationMaps } from './massBoqImportAdditional';
 
 // ===========================
 // ВАЛИДАЦИЯ
 // ===========================
 
-interface ValidationMaps {
+interface ValidationMaps extends AdditionalValidationMaps {
   clientPositionsMap: Map<string, ClientPosition>;
   workNamesMap: Map<string, string>;
   materialNamesMap: Map<string, string>;
@@ -29,6 +31,7 @@ export const validateBoqData = (
   data: ParsedBoqItem[],
   positionUpdates: Map<string, PositionUpdateData>,
   maps: ValidationMaps,
+  additionalPositions: ParsedAdditionalPosition[] = [],
 ): ValidationResult => {
   const { clientPositionsMap, workNamesMap, materialNamesMap, costCategoriesMap, leafPositionIds } = maps;
 
@@ -48,8 +51,11 @@ export const validateBoqData = (
   data.forEach((item) => {
     const row = item.rowIndex;
 
-    // 1. Проверка номера позиции и сопоставление
-    if (!item.positionNumber) {
+    // 1. Проверка номера позиции и сопоставление. Элементы блока «доп» уходят в
+    // новую ДОП (всегда лист) — её родителя проверяет validateAdditionalPositions.
+    if (item.additionalTempId) {
+      // позиция будет создана импортом
+    } else if (!item.positionNumber) {
       errors.push({
         rowIndex: row,
         type: 'missing_field',
@@ -255,6 +261,9 @@ export const validateBoqData = (
     }
   });
 
+  // 5.1 Строки «доп» (новые ДОП)
+  errors.push(...validateAdditionalPositions(additionalPositions, maps));
+
   // 6. Валидация position-only записей (только данные ГП без BOQ-элементов)
   positionUpdates.forEach((posData, posNum) => {
     const position = clientPositionsMap.get(posNum);
@@ -310,9 +319,13 @@ export const validateBoqData = (
 export const processWorkBindings = (data: ParsedBoqItem[]): ValidationError[] => {
   const errors: ValidationError[] = [];
 
+  // Привязка «материал → работа выше» не пересекает границу ДОП: у элементов
+  // блока «доп» своя группа.
   const byPosition = new Map<string, ParsedBoqItem[]>();
   data.forEach(item => {
-    const posId = item.matchedPositionId || item.positionNumber;
+    const posId = item.additionalTempId
+      ? `dop:${item.additionalTempId}`
+      : item.matchedPositionId || item.positionNumber;
     if (!byPosition.has(posId)) {
       byPosition.set(posId, []);
     }

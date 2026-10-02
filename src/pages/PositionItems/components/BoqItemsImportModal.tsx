@@ -3,11 +3,14 @@ import { Modal, Steps, Button, Space, Progress, Alert } from 'antd';
 import { FileUploadStep } from './FileUploadStep';
 import { ValidationResultsStep } from './ValidationResultsStep';
 import { useBoqItemsImport } from '../hooks/useBoqItemsImport';
+import { formatCreatedAdditionalNumbers } from '../../../utils/boq/additionalImport';
 
 interface BoqItemsImportModalProps {
   open: boolean;
   positionId: string;
   tenderId: string;
+  /** Позиция заказчика, к которой строки «доп» создают ДОП (для ДОП — её родитель). */
+  additionalParentId: string;
   onClose: (success: boolean) => void;
 }
 
@@ -15,6 +18,7 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
   open,
   positionId,
   tenderId,
+  additionalParentId,
   onClose,
 }) => {
   const [currentStep, setCurrentStep] = useState(0);
@@ -23,6 +27,8 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
 
   const {
     parsedData,
+    additionalRows,
+    createdAdditional,
     validationResult,
     uploading,
     uploadProgress,
@@ -93,7 +99,7 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
   const handleImport = async () => {
     setCurrentStep(2);
 
-    const success = await insertBoqItems(parsedData, positionId, tenderId);
+    const success = await insertBoqItems(parsedData, positionId, tenderId, additionalParentId);
 
     if (success) {
       setTimeout(() => {
@@ -151,10 +157,12 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
           key="import"
           type="primary"
           onClick={handleValidate}
-          disabled={hasErrors || parsedData.length === 0 || addingToNomenclature}
+          disabled={hasErrors || (parsedData.length === 0 && additionalRows.length === 0) || addingToNomenclature}
           loading={uploading}
         >
-          {hasErrors ? 'Устранить ошибки' : `Импортировать ${parsedData.length} элементов`}
+          {hasErrors
+            ? 'Устранить ошибки'
+            : `Импортировать ${parsedData.length} элементов${additionalRows.length > 0 ? ` + ${additionalRows.length} ДОП` : ''}`}
         </Button>,
       ];
     }
@@ -206,6 +214,7 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
           <ValidationResultsStep
             validationResult={validationResult}
             totalRows={parsedData.length}
+            additionalRows={additionalRows}
           />
         )}
 
@@ -217,7 +226,10 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
                 <Alert
                   type="info"
                   message="Импорт данных"
-                  description={`Загрузка ${parsedData.length} элементов в базу данных…`}
+                  description={
+                    `Загрузка ${parsedData.length} элементов в базу данных` +
+                    (additionalRows.length > 0 ? `, создание ДОП: ${additionalRows.length}` : '') + '…'
+                  }
                   showIcon
                 />
                 <Progress
@@ -231,7 +243,12 @@ export const BoqItemsImportModal: React.FC<BoqItemsImportModalProps> = ({
               <Alert
                 type="success"
                 message="Импорт завершён успешно!"
-                description={`Импортировано элементов: ${parsedData.length}`}
+                description={
+                  `Импортировано элементов: ${parsedData.length}` +
+                  (createdAdditional.length > 0
+                    ? `. Создано ДОП: ${createdAdditional.length} (${formatCreatedAdditionalNumbers(createdAdditional)})`
+                    : '')
+                }
                 showIcon
               />
             )}

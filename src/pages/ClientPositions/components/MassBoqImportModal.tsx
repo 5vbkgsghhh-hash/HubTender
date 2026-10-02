@@ -31,6 +31,8 @@ const MassBoqImportModalInner: React.FC<MassBoqImportModalProps> = ({
   const {
     parsedData,
     positionUpdates,
+    additionalPositions,
+    createdAdditional,
     validationResult,
     uploading,
     uploadProgress,
@@ -53,6 +55,7 @@ const MassBoqImportModalInner: React.FC<MassBoqImportModalProps> = ({
     loadExistingItems,
     reset,
     getPositionStats,
+    additionalPreviewRows,
   } = useMassBoqImport();
 
   // Загрузка справочников при открытии
@@ -155,8 +158,14 @@ const MassBoqImportModalInner: React.FC<MassBoqImportModalProps> = ({
   const positionOnlyCount = positionStats.filter(
     p => p.matched && p.itemsCount === 0 && (p.manualVolume !== undefined || p.manualNote !== undefined)
   ).length;
-  const hasDataToImport = parsedData.length > 0 || positionOnlyCount > 0;
+  const additionalCount = additionalPositions.length;
+  const hasDataToImport = parsedData.length > 0 || positionOnlyCount > 0 || additionalCount > 0;
   const unknownUnits = getUnknownUnits();
+  const importLabelParts = [
+    ...(parsedData.length > 0 ? [`${parsedData.length} элементов`] : []),
+    ...(positionOnlyCount > 0 ? [`${positionOnlyCount} поз. ГП`] : []),
+    ...(additionalCount > 0 ? [`${additionalCount} ДОП`] : []),
+  ];
   const allUnitsMapped = unknownUnits.every(u => !!unitMappings[u]);
   const hasUnmappedUnits = unknownUnits.length > 0 && !allUnitsMapped;
 
@@ -212,11 +221,9 @@ const MassBoqImportModalInner: React.FC<MassBoqImportModalProps> = ({
         >
           {hasUnmappedUnits
             ? 'Сопоставьте единицы измерения'
-            : parsedData.length > 0 && positionOnlyCount > 0
-                ? `Загрузить ${parsedData.length} элементов + ${positionOnlyCount} поз. ГП`
-                : parsedData.length > 0
-                  ? `Загрузить ${parsedData.length} элементов`
-                  : `Загрузить ${positionOnlyCount} позиций (данные ГП)`
+            : parsedData.length === 0 && additionalCount === 0
+              ? `Загрузить ${positionOnlyCount} позиций (данные ГП)`
+              : `Загрузить ${importLabelParts.join(' + ')}`
           }
         </Button>,
       ];
@@ -275,6 +282,7 @@ const MassBoqImportModalInner: React.FC<MassBoqImportModalProps> = ({
               positionUpdates={positionUpdates}
               clientPositionsMap={clientPositionsMap}
               existingItemsByPosition={existingItemsByPosition}
+              additionalRows={additionalPreviewRows}
               unknownUnits={unknownUnits}
               unitMappings={unitMappings}
               setUnitMapping={setUnitMapping}
@@ -290,11 +298,13 @@ const MassBoqImportModalInner: React.FC<MassBoqImportModalProps> = ({
             importStatus={importStatus}
             importError={importError}
             importMismatches={importMismatches}
-            insertedCount={parsedData.filter(i => i.matchedPositionId).length}
+            insertedCount={parsedData.filter(i => i.matchedPositionId || i.additionalTempId).length}
             uploadProgress={uploadProgress}
             parsedDataLength={parsedData.length}
             matchedCount={matchedCount}
             positionOnlyCount={positionOnlyCount}
+            additionalCount={additionalCount}
+            createdAdditional={createdAdditional}
           />
         )}
       </Space>

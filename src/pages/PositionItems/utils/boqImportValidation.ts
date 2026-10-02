@@ -5,6 +5,11 @@ import {
   buildNomenclatureLookupKey,
 } from '../../../utils/boq/importShared';
 import { validateBoqRowBasics } from '../../../utils/boq/importRowValidation';
+import {
+  findDuplicateAdditionalRows,
+  validateAdditionalRowBasics,
+  type ParsedAdditionalRow,
+} from '../../../utils/boq/additionalImport';
 import type {
   ParsedBoqItem,
   ValidationError,
@@ -17,7 +22,31 @@ export interface BoqValidationMaps {
   workNamesMap: Map<string, string>;
   materialNamesMap: Map<string, string>;
   costCategoriesMap: Map<string, string>;
+  /** Коды единиц — для строк «доп» (единица ДОП ссылается на справочник). */
+  unitCodes?: Set<string>;
 }
+
+/**
+ * Строки «доп»: поля как в модалке «Добавить ДОП работу» и запрет повторов
+ * наименования внутри файла (все ДОП создаются к одной позиции). Дубль с уже
+ * существующей ДОП позиции отсекает сервер — атомарно, с номером строки.
+ */
+const validateAdditionalRows = (
+  additionalRows: ParsedAdditionalRow[],
+  unitCodes?: Set<string>,
+): ValidationError[] => {
+  const errors: ValidationError[] = [];
+  const push = (rowIndex: number, message: string) => {
+    errors.push({ rowIndex, type: 'additional_error', field: 'additional', message, severity: 'error' });
+  };
+  additionalRows.forEach((row) => {
+    validateAdditionalRowBasics(row, unitCodes).forEach((message) => push(row.rowIndex, message));
+  });
+  findDuplicateAdditionalRows(additionalRows, () => 'position').forEach(({ row, firstRow }) => {
+    push(row.rowIndex, `ДОП «${row.workName}» уже есть в файле (строка ${firstRow.rowIndex})`);
+  });
+  return errors;
+};
 
 // Парсинг затраты на строительство: "Категория / Детальная категория / Локация"
 // ВАЖНО: Детальная категория может содержать слэши (например, "Плиты перекрытия / покрытия / разгрузочные")
@@ -62,7 +91,8 @@ export const parseCostCategory = (text: string): { category?: string; detail?: s
  */
 export const validateBoqData = (
   data: ParsedBoqItem[],
-  { workNamesMap, materialNamesMap, costCategoriesMap }: BoqValidationMaps,
+  { workNamesMap, materialNamesMap, costCategoriesMap, unitCodes }: BoqValidationMaps,
+  additionalRows: ParsedAdditionalRow[] = [],
 ): ValidationResult => {
   console.log('[BoqImport] Валидация данных:', {
     rows: data.length,
@@ -261,6 +291,9 @@ export const validateBoqData = (
       }
     }
   });
+
+  // 8. Строки «доп» (новые ДОП)
+  errors.push(...validateAdditionalRows(additionalRows, unitCodes));
 
   const result: ValidationResult = {
     isValid: errors.length === 0,

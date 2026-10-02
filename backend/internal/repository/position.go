@@ -3,9 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -215,88 +213,6 @@ func (r *PositionRepo) BulkInsertPositions(ctx context.Context, rows []BulkPosit
 		return 0, fmt.Errorf("positionRepo.BulkInsertPositions: commit: %w", err)
 	}
 	return len(rows), nil
-}
-
-// ErrParentPositionNotFound is returned when the parent position is missing.
-var ErrParentPositionNotFound = errors.New("родительская позиция не найдена")
-
-// CreateAdditionalPositionInput drives the "additional work" create flow
-// (AddAdditionalPositionModal.handleOk).
-type CreateAdditionalPositionInput struct {
-	ParentPositionID string
-	TenderID         string
-	WorkName         string
-	UnitCode         *string
-	ManualVolume     *float64
-	ManualNote       *string
-}
-
-// CreateAdditionalPosition computes the decimal-suffixed position_number
-// (e.g. 5.1, 5.2) and inserts an is_additional child position — one tx,
-// replicating the legacy read-parent + max-suffix + insert. No created_by
-// (column absent on client_positions; legacy code also omitted it).
-func (r *PositionRepo) CreateAdditionalPosition(ctx context.Context, in CreateAdditionalPositionInput) (string, error) {
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return "", fmt.Errorf("positionRepo.CreateAdditionalPosition: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	var parentNumber float64
-	var parentLevel *int
-	err = tx.QueryRow(ctx,
-		`SELECT position_number, hierarchy_level FROM public.client_positions WHERE id = $1`,
-		in.ParentPositionID,
-	).Scan(&parentNumber, &parentLevel)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrParentPositionNotFound
-	}
-	if err != nil {
-		return "", fmt.Errorf("positionRepo.CreateAdditionalPosition: parent: %w", err)
-	}
-
-	var lastNumber *float64
-	if err := tx.QueryRow(ctx, `
-		SELECT position_number FROM public.client_positions
-		WHERE parent_position_id = $1 AND is_additional = true
-		ORDER BY position_number DESC
-		LIMIT 1
-	`, in.ParentPositionID).Scan(&lastNumber); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("positionRepo.CreateAdditionalPosition: last additional: %w", err)
-	}
-
-	var newNumber float64
-	if lastNumber != nil {
-		floorLast := math.Floor(*lastNumber)
-		decimalPart := *lastNumber - floorLast
-		nextSuffix := math.Round((decimalPart+0.1)*10) / 10
-		newNumber = floorLast + nextSuffix
-	} else {
-		newNumber = parentNumber + 0.1
-	}
-
-	level := 1
-	if parentLevel != nil {
-		level = *parentLevel + 1
-	}
-
-	var newID string
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO public.client_positions
-			(tender_id, position_number, work_name, unit_code, manual_volume,
-			 manual_note, hierarchy_level, is_additional, parent_position_id,
-			 volume, client_note, item_no)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, true, $8::uuid, NULL, NULL, NULL)
-		RETURNING id::text
-	`, in.TenderID, newNumber, in.WorkName, in.UnitCode, in.ManualVolume,
-		in.ManualNote, level, in.ParentPositionID).Scan(&newID); err != nil {
-		return "", fmt.Errorf("positionRepo.CreateAdditionalPosition: insert: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("positionRepo.CreateAdditionalPosition: commit: %w", err)
-	}
-	return newID, nil
 }
 
 // BulkDeletePositions deletes the given client_positions and all their

@@ -20,8 +20,11 @@ type ImportBoqItem struct {
 	// RowIndex is used for error messages only (optional, matches row_index in SQL).
 	RowIndex *int `json:"row_index"`
 
-	// Required: the position this item belongs to.
-	ClientPositionID string `json:"client_position_id"`
+	// Required: the position this item belongs to — either an existing one
+	// (ClientPositionID) or a ДОП created by this import (ClientPositionTempID
+	// = ImportAdditionalPosition.TempID). Exactly one of the two is set.
+	ClientPositionID     string  `json:"client_position_id"`
+	ClientPositionTempID *string `json:"client_position_temp_id"`
 
 	// TempID is an opaque string the caller uses to link a parent work item
 	// to its children within the same batch. If set, the inserted UUID is
@@ -81,6 +84,8 @@ type ImportInput struct {
 	UserID          string // empty string → no import_sessions row
 	Items           []ImportBoqItem
 	PositionUpdates []ImportPositionUpdate
+	// AdditionalPositions — строки «доп»: ДОП создаются до вставки элементов.
+	AdditionalPositions []ImportAdditionalPosition
 }
 
 // ImportTotalMismatchTolerance — the ONE tolerance used when comparing a
@@ -109,6 +114,8 @@ type ImportResult struct {
 	UpdatedPositionsCount int                   `json:"updated_positions_count"`
 	TotalMismatchCount    int                   `json:"total_mismatch_count"`
 	TotalMismatches       []ImportTotalMismatch `json:"total_mismatches"`
+	// CreatedAdditionalPositions — ДОП, созданные строками «доп» (в порядке файла).
+	CreatedAdditionalPositions []CreatedAdditionalPosition `json:"created_additional_positions"`
 }
 
 // ErrBulkImport is a sentinel type for 400-class errors raised inside the
@@ -225,14 +232,28 @@ func (r *ImportRepo) BulkImport(ctx context.Context, in ImportInput) (*ImportRes
 	}
 
 	// ------------------------------------------------------------------
+	// Step 2b: create the ДОП of the «доп» rows, then point their items at
+	// the new positions. Same tx: a failure later rolls the ДОП back too.
+	// ------------------------------------------------------------------
+	tempToID, createdDops, err := createImportAdditionalPositionsTx(ctx, tx, in.TenderID, in.AdditionalPositions)
+	if err != nil {
+		return nil, err
+	}
+	result.CreatedAdditionalPositions = createdDops
+	items, err := resolveItemPositionTempIDs(in.Items, tempToID)
+	if err != nil {
+		return nil, err
+	}
+
+	// ------------------------------------------------------------------
 	// Step 3: sort items by (client_position_id, original index) then loop.
 	// ------------------------------------------------------------------
 	type indexedItem struct {
 		idx  int
 		item ImportBoqItem
 	}
-	indexed := make([]indexedItem, len(in.Items))
-	for i, it := range in.Items {
+	indexed := make([]indexedItem, len(items))
+	for i, it := range items {
 		indexed[i] = indexedItem{idx: i, item: it}
 	}
 	sort.SliceStable(indexed, func(a, b int) bool {
@@ -526,15 +547,20 @@ func (r *ImportRepo) BulkImport(ctx context.Context, in ImportInput) (*ImportRes
 	}
 
 	// ------------------------------------------------------------------
-	// Step 5: patch items_count on the import_sessions row.
+	// Step 5: patch items_count and the created ДОП (the cancel deletes them)
+	// on the import_sessions row.
 	// ------------------------------------------------------------------
 	if importSessionID != nil {
+		createdJSON, err := json.Marshal(createdDops)
+		if err != nil {
+			return nil, fmt.Errorf("importRepo.BulkImport: marshal created positions: %w", err)
+		}
 		const updateSessionQ = `
 			UPDATE public.import_sessions
-			SET items_count = $1
-			WHERE id = $2::uuid
+			SET items_count = $1, created_positions = $2::jsonb
+			WHERE id = $3::uuid
 		`
-		if _, err := tx.Exec(ctx, updateSessionQ, result.InsertedItemsCount, *importSessionID); err != nil {
+		if _, err := tx.Exec(ctx, updateSessionQ, result.InsertedItemsCount, createdJSON, *importSessionID); err != nil {
 			return nil, fmt.Errorf("importRepo.BulkImport: update import_sessions: %w", err)
 		}
 	}

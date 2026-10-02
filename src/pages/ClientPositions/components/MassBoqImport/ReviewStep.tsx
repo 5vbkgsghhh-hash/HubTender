@@ -2,7 +2,8 @@ import React from 'react';
 import { Alert, Collapse, Select, Space, Table, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { BoqPreviewTable } from '../BoqPreviewTable';
-import type { ParsedBoqItem, PositionUpdateData, ClientPosition } from '../../utils';
+import { AdditionalRowsPreview } from '../../../../components/BoqImport/AdditionalRowsPreview';
+import type { ParsedBoqItem, ParsedAdditionalPosition, PositionUpdateData, ClientPosition } from '../../utils';
 import type { ExistingBoqPreviewItem } from '../../hooks/useMassBoqImportRefs';
 
 const { Text } = Typography;
@@ -28,6 +29,8 @@ export const ReviewStep: React.FC<{
   positionUpdates: Map<string, PositionUpdateData>;
   clientPositionsMap: Map<string, ClientPosition>;
   existingItemsByPosition: Map<string, ExistingBoqPreviewItem[]>;
+  /** Строки «доп» (новые ДОП) с подписью позиции-родителя. */
+  additionalRows: ParsedAdditionalPosition[];
   unknownUnits: string[];
   unitMappings: Record<string, string>;
   setUnitMapping: (excelUnit: string, dbUnit: string) => void;
@@ -40,6 +43,7 @@ export const ReviewStep: React.FC<{
   positionUpdates,
   clientPositionsMap,
   existingItemsByPosition,
+  additionalRows,
   unknownUnits,
   unitMappings,
   setUnitMapping,
@@ -113,6 +117,9 @@ export const ReviewStep: React.FC<{
       ]}
     />
 
+    {/* Новые ДОП из строк «доп» */}
+    <AdditionalRowsPreview rows={additionalRows} showParent />
+
     {/* Предпросмотр: существующие и новые строки */}
     <Collapse defaultActiveKey={['preview']} style={{ marginBottom: 16 }}>
       <Panel header="Предпросмотр строк (существующие и новые)" key="preview">
@@ -121,6 +128,7 @@ export const ReviewStep: React.FC<{
           positionUpdates={positionUpdates}
           clientPositionsMap={clientPositionsMap}
           existingItemsByPosition={existingItemsByPosition}
+          additionalRows={additionalRows}
         />
       </Panel>
     </Collapse>

@@ -1,23 +1,30 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { message } from 'antd';
 import { apiFetch } from '../../../lib/api/client';
 import { createWorkName, createMaterialName } from '../../../lib/api/nomenclatures';
 import {
   ParsedBoqItem,
+  ParsedAdditionalPosition,
   PositionUpdateData,
   ValidationResult,
   parseExcelData,
   validateBoqData,
   processWorkBindings,
+  normalizePositionNumber,
 } from '../utils';
 import {
   buildPositionUpdatesPayload,
   buildBoqItemsPayload,
+  buildAdditionalPositionsPayload,
   analyzeImportMismatch,
   ImportTotalMismatch,
 } from '../utils/massBoqImportPayload';
 import { buildMissingNomenclatureInserts } from '../../../utils/boq/nomenclatureImport';
+import {
+  formatCreatedAdditionalNumbers,
+  type CreatedAdditionalPosition,
+} from '../../../utils/boq/additionalImport';
 import { useMassBoqImportRefs } from './useMassBoqImportRefs';
 import { getErrorMessage } from '../../../utils/errors';
 
@@ -31,6 +38,9 @@ import { getErrorMessage } from '../../../utils/errors';
 export const useMassBoqImport = () => {
   const [parsedData, setParsedData] = useState<ParsedBoqItem[]>([]);
   const [positionUpdates, setPositionUpdates] = useState<Map<string, PositionUpdateData>>(new Map());
+  // Строки «доп» файла и ДОП, созданные сервером по итогам импорта.
+  const [additionalPositions, setAdditionalPositions] = useState<ParsedAdditionalPosition[]>([]);
+  const [createdAdditional, setCreatedAdditional] = useState<CreatedAdditionalPosition[]>([]);
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -48,6 +58,8 @@ export const useMassBoqImport = () => {
     costCategoriesMap,
     clientPositionsMap,
     leafPositionIds,
+    positionsById,
+    existingAdditionalByParent,
     availableUnits,
     existingItemsByPosition,
     loadNomenclature: loadNomenclatureRefs,
@@ -84,10 +96,11 @@ export const useMassBoqImport = () => {
           const jsonData = XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1 });
 
           const rows = jsonData.slice(1);
-          const { parsed, posUpdates } = parseExcelData(rows);
+          const { parsed, posUpdates, additionalPositions: dops } = parseExcelData(rows);
 
           setParsedData(parsed);
           setPositionUpdates(posUpdates);
+          setAdditionalPositions(dops);
 
           const positionOnlyCount = Array.from(posUpdates.values()).filter(
             p => p.itemsCount === 0 && (p.manualVolume !== undefined || p.manualNote !== undefined)
@@ -99,6 +112,9 @@ export const useMassBoqImport = () => {
           }
           if (positionOnlyCount > 0) {
             parts.push(`${positionOnlyCount} позиций с данными ГП`);
+          }
+          if (dops.length > 0) {
+            parts.push(`${dops.length} новых ДОП`);
           }
           message.success(`Файл обработан: ${parts.join(', ')} в ${posUpdates.size} позициях`);
           resolve(true);
@@ -129,7 +145,10 @@ export const useMassBoqImport = () => {
       materialNamesMap,
       costCategoriesMap,
       leafPositionIds,
-    });
+      positionsById,
+      existingAdditionalByParent,
+      unitCodes: new Set(availableUnits.map(u => u.code)),
+    }, additionalPositions);
     setValidationResult(result);
     return result;
   };
@@ -150,12 +169,15 @@ export const useMassBoqImport = () => {
       setImportStatus('running');
       setImportError(null);
       setImportMismatches([]);
+      setCreatedAdditional([]);
 
       const positionUpdatesPayload = buildPositionUpdatesPayload(positionUpdates);
 
       // Этап 0-F1: клиент больше не считает total_amount — курсы и расчёт
       // каждой строки выполняет сервер (calc) по фактическим курсам тендера.
       const itemsPayload = buildBoqItemsPayload(data);
+      // Строки «доп»: сервер создаёт ДОП в той же транзакции до вставки элементов.
+      const additionalPayload = buildAdditionalPositionsPayload(additionalPositions);
 
       setUploadProgress(15);
 
@@ -163,6 +185,7 @@ export const useMassBoqImport = () => {
       let updatedPositionsCount = 0;
       let importSessionId: string | null = null;
       let totalMismatches: ImportTotalMismatch[] = [];
+      let created: CreatedAdditionalPosition[] = [];
 
       {
         // Go BFF: один pgx.Tx, audit в той же транзакции, user_id из JWT
@@ -174,6 +197,7 @@ export const useMassBoqImport = () => {
           updated_positions_count: number;
           total_mismatch_count?: number;
           total_mismatches?: ImportTotalMismatch[];
+          created_additional_positions?: CreatedAdditionalPosition[];
         }>('/api/v1/imports/boq', {
           method: 'POST',
           timeoutMs: 0,
@@ -182,14 +206,17 @@ export const useMassBoqImport = () => {
             file_name: fileName || '',
             items: itemsPayload,
             position_updates: positionUpdatesPayload,
+            additional_positions: additionalPayload,
           }),
         });
         insertedItemsCount = goResp.inserted_items_count;
         updatedPositionsCount = goResp.updated_positions_count;
         importSessionId = goResp.import_session_id;
         totalMismatches = goResp.total_mismatches ?? [];
+        created = goResp.created_additional_positions ?? [];
       }
       setImportMismatches(totalMismatches);
+      setCreatedAdditional(created);
 
       setUploadProgress(100);
 
@@ -199,6 +226,8 @@ export const useMassBoqImport = () => {
         itemsPayload.length,
         positionUpdatesPayload.length,
         data,
+        created.length,
+        additionalPayload.length,
       );
 
       console.log('[MassBoqImport] Импорт завершён:', {
@@ -230,6 +259,9 @@ export const useMassBoqImport = () => {
       }
       if (updatedPositionsCount > 0) {
         msgParts.push(`обновлено ${updatedPositionsCount} позиций`);
+      }
+      if (created.length > 0) {
+        msgParts.push(`создано ДОП: ${created.length} (${formatCreatedAdditionalNumbers(created)})`);
       }
       message.success(`Импортировано: ${msgParts.join(', ')}`);
       if (totalMismatches.length > 0) {
@@ -313,16 +345,17 @@ export const useMassBoqImport = () => {
   // МАППИНГ ЕДИНИЦ ИЗМЕРЕНИЯ
   // ===========================
 
-  // Единицы из Excel, отсутствующие в units таблице
+  // Единицы из Excel, отсутствующие в units таблице (элементы и строки «доп»)
   const getUnknownUnits = (): string[] => {
-    if (!parsedData.length || !availableUnits.length) return [];
+    if ((!parsedData.length && !additionalPositions.length) || !availableUnits.length) return [];
     const dbCodes = new Set(availableUnits.map(u => u.code));
     const unknown = new Set<string>();
-    parsedData.forEach(item => {
-      if (item.unit_code && !dbCodes.has(item.unit_code)) {
-        unknown.add(item.unit_code);
-      }
-    });
+    [...parsedData.map(item => item.unit_code), ...additionalPositions.map(dop => dop.unitCode)]
+      .forEach(code => {
+        if (code && !dbCodes.has(code)) {
+          unknown.add(code);
+        }
+      });
     return Array.from(unknown).sort();
   };
 
@@ -343,6 +376,10 @@ export const useMassBoqImport = () => {
       ...item,
       unit_code: unitMappings[item.unit_code] || item.unit_code,
     })));
+    setAdditionalPositions(prev => prev.map(dop => ({
+      ...dop,
+      unitCode: unitMappings[dop.unitCode] || dop.unitCode,
+    })));
     return true;
   };
 
@@ -353,6 +390,8 @@ export const useMassBoqImport = () => {
   const reset = () => {
     setParsedData([]);
     setPositionUpdates(new Map());
+    setAdditionalPositions([]);
+    setCreatedAdditional([]);
     setValidationResult(null);
     setUploadProgress(0);
     setImportStatus('idle');
@@ -388,10 +427,28 @@ export const useMassBoqImport = () => {
     return Array.from(stats.values());
   };
 
+  // Строки «доп» для предпросмотра: родитель — как его определит валидация
+  // (существующая ДОП заменяется своей позицией заказчика).
+  const additionalPreviewRows = useMemo(() => additionalPositions.map((dop) => {
+    let parent = clientPositionsMap.get(dop.parentPositionNumber);
+    if (parent?.is_additional) {
+      parent = parent.parent_position_id ? positionsById.get(parent.parent_position_id) : undefined;
+    }
+    const fallback = dop.parentPositionNumber ? `${dop.parentPositionNumber} — не найдена` : '—';
+    return {
+      ...dop,
+      parentPositionLabel: parent
+        ? `${normalizePositionNumber(parent.position_number)} ${parent.work_name}`
+        : fallback,
+    };
+  }), [additionalPositions, clientPositionsMap, positionsById]);
+
   return {
     // Данные
     parsedData,
     positionUpdates,
+    additionalPositions,
+    createdAdditional,
     validationResult,
     uploading,
     uploadProgress,
@@ -418,5 +475,6 @@ export const useMassBoqImport = () => {
     loadExistingItems,
     reset,
     getPositionStats,
+    additionalPreviewRows,
   };
 };

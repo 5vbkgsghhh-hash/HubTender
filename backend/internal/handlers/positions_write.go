@@ -237,6 +237,10 @@ func (h *PositionWriteHandler) CreateAdditionalPosition(w http.ResponseWriter, r
 			apierr.NotFound(err.Error()).Render(w)
 			return
 		}
+		if errors.Is(err, repository.ErrParentIsAdditional) {
+			apierr.BadRequest(err.Error()).Render(w)
+			return
+		}
 		apierr.InternalFromErr(w, r, err, "failed to create additional position")
 		return
 	}

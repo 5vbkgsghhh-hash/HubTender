@@ -79,6 +79,13 @@ export const FileUploadStep: React.FC<FileUploadStepProps> = ({ onFileUpload, up
             <List.Item>
               <Text>Колонка 20: <Text code>Примечание ГП</Text> (текст)</Text>
             </List.Item>
+            <List.Item>
+              <Text>
+                Новая ДОП-работа: строка с <Text code>доп</Text> в колонке 5 (наименование, ед. изм., количество ГП и
+                примечание ГП — в колонках 7/8/12/20). ДОП создаётся к этой позиции заказчика, номер присваивается при
+                загрузке; строки ниже «доп» попадают в эту ДОП до следующей «доп», строки выше — в текущую позицию.
+              </Text>
+            </List.Item>
           </List>
         }
         type="info"

@@ -1,3 +1,5 @@
+import type { ParsedAdditionalRow } from '../../../utils/boq/additionalImport';
+
 // ===========================
 // ТИПЫ И ИНТЕРФЕЙСЫ
 // ===========================
@@ -8,6 +10,8 @@ export interface ParsedBoqItem {
   // Идентификация позиции
   positionNumber: string;
   matchedPositionId?: string;
+  /** Элемент блока «доп»: уходит в новую ДОП (tempId строки «доп»), не в positionNumber. */
+  additionalTempId?: string;
 
   // Основные поля
   boq_item_type: 'раб' | 'суб-раб' | 'раб-комп.' | 'мат' | 'суб-мат' | 'мат-комп.';
@@ -50,6 +54,17 @@ export interface ParsedBoqItem {
   sort_number: number;
 }
 
+// Строка «доп» массового импорта: новая ДОП к позиции заказчика выше.
+export interface ParsedAdditionalPosition extends ParsedAdditionalRow {
+  /** Номер ближайшей строки с номером выше («доп» привязывается к ней). */
+  parentPositionNumber: string;
+  /** Колонка 2 (№ п/п) строки «доп» — должна быть пустой, номер даёт сервер. */
+  columnB: string;
+  /** Заполняет валидация. */
+  parentPositionId?: string;
+  parentPositionLabel?: string;
+}
+
 // Данные для обновления позиции заказчика
 export interface PositionUpdateData {
   positionNumber: string;
@@ -61,7 +76,7 @@ export interface PositionUpdateData {
 
 export interface ValidationError {
   rowIndex: number;
-  type: 'missing_nomenclature' | 'unit_mismatch' | 'missing_cost' | 'invalid_type' | 'missing_field' | 'binding_error' | 'position_not_found' | 'non_leaf_position';
+  type: 'missing_nomenclature' | 'unit_mismatch' | 'missing_cost' | 'invalid_type' | 'missing_field' | 'binding_error' | 'position_not_found' | 'non_leaf_position' | 'additional_error';
   field: string;
   message: string;
   severity: 'error' | 'warning';
@@ -98,6 +113,7 @@ export interface ClientPosition {
   work_name: string;
   hierarchy_level: number | null;
   is_additional: boolean | null;
+  parent_position_id: string | null;
 }
 
 // ===========================

@@ -6,6 +6,8 @@ import {
   WarningOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
+import { AdditionalRowsPreview } from '../../../components/BoqImport/AdditionalRowsPreview';
+import type { ParsedAdditionalRow } from '../../../utils/boq/additionalImport';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
@@ -38,11 +40,18 @@ interface ValidationResult {
 interface ValidationResultsStepProps {
   validationResult: ValidationResult;
   totalRows: number;
+  /** Строки «доп» — новые ДОП к позиции. */
+  additionalRows?: ParsedAdditionalRow[];
 }
+
+const ADDITIONAL_HINT =
+  'ДОП создаются к позиции заказчика этой страницы, номер присвоится при загрузке; ' +
+  'работы и материалы под строкой «доп» попадут в эту ДОП.';
 
 export const ValidationResultsStep: React.FC<ValidationResultsStepProps> = ({
   validationResult,
   totalRows,
+  additionalRows = [],
 }) => {
   const { isValid, errors, warnings, missingNomenclature, unknownCosts } = validationResult;
 
@@ -63,6 +72,7 @@ export const ValidationResultsStep: React.FC<ValidationResultsStepProps> = ({
       invalid_type: 'Недопустимый тип',
       missing_field: 'Пустое обязательное поле',
       binding_error: 'Ошибка привязки материала',
+      additional_error: 'Строки «доп» — новые ДОП',
     };
     return labels[type] || type;
   };
@@ -80,7 +90,10 @@ export const ValidationResultsStep: React.FC<ValidationResultsStepProps> = ({
           }
           description={
             <Space direction="vertical">
-              <Text>Все {totalRows} строк готовы к импорту.</Text>
+              <Text>
+                Все {totalRows} строк готовы к импорту
+                {additionalRows.length > 0 ? `, будет создано ДОП: ${additionalRows.length}` : ''}.
+              </Text>
               {warnings.length > 0 && (
                 <Text type="warning">
                   Найдено {warnings.length} предупреждений (не блокируют импорт).
@@ -90,6 +103,8 @@ export const ValidationResultsStep: React.FC<ValidationResultsStepProps> = ({
           }
           showIcon
         />
+
+        <AdditionalRowsPreview rows={additionalRows} hint={ADDITIONAL_HINT} />
 
         {/* Предупреждения (не критичные) */}
         {warnings.length > 0 && (

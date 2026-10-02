@@ -263,7 +263,7 @@ func buildDeps(
 	tenderRegistrySvc := services.NewTenderRegistryService(tenderRegistryRepo)
 	costsSvc := services.NewCostsService(costsRepo, inMemCache)
 	nomenclaturesSvc := services.NewNomenclaturesService(nomenclaturesRepo, inMemCache)
-	importLogSvc := services.NewImportLogService(importLogRepo)
+	importLogSvc := services.NewImportLogService(importLogRepo, inMemCache).WithRecalcQueue(recalcQueue)
 	projectsSvc := services.NewProjectsService(projectsRepo)
 	userAdminSvc := services.NewUserAdminService(userAdminRepo, inMemCache)
 	markupSvc := services.NewMarkupService(markupRepo, inMemCache).WithRecalcQueue(recalcQueue)

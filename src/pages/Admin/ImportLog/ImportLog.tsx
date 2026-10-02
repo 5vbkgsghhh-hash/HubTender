@@ -29,6 +29,7 @@ import {
   fetchAllTendersForFilter,
   cancelImportSession,
 } from '../../../lib/api/importLog';
+import type { CreatedAdditionalPosition } from '../../../utils/boq/additionalImport';
 
 const { Text } = Typography;
 
@@ -50,6 +51,8 @@ interface ImportSessionRow {
     manual_volume: number | null;
     manual_note: string | null;
   }> | null;
+  /** ДОП, созданные строками «доп» этого импорта. */
+  created_positions: CreatedAdditionalPosition[];
   user_full_name: string;
   user_role: string;
   user_role_name: string;
@@ -107,6 +110,7 @@ const ImportLog: React.FC = () => {
         cancelled_at: s.cancelled_at,
         cancelled_by: s.cancelled_by,
         positions_snapshot: s.positions_snapshot,
+        created_positions: s.created_positions ?? [],
         user_full_name: usersMap.get(s.user_id)?.full_name || '—',
         user_role: usersMap.get(s.user_id)?.role_code || '',
         user_role_name: usersMap.get(s.user_id)?.roles?.name || '',
@@ -162,6 +166,13 @@ const ImportLog: React.FC = () => {
             Будут удалены <Text strong>{session.items_count}</Text> элементов BOQ,
             импортированных из файла <Text code>{session.file_name || 'неизвестный файл'}</Text>.
           </Text>
+          {session.created_positions.length > 0 && (
+            <Text>
+              Будут удалены ДОП, созданные этим импортом: <Text strong>{session.created_positions.length}</Text>{' '}
+              ({session.created_positions.map((p) => p.position_number).join(', ')}). ДОП, в которые после
+              импорта добавляли элементы, останутся.
+            </Text>
+          )}
           <Text type="secondary">
             Данные ГП позиций (количество и примечание) будут восстановлены до состояния до импорта.
           </Text>
@@ -180,8 +191,17 @@ const ImportLog: React.FC = () => {
     if (!user?.id) return;
     setCancelling(session.id);
     try {
-      await cancelImportSession(session, user.id);
-      message.success(`Импорт отменён. Удалено ${session.items_count} элементов BOQ.`);
+      const res = await cancelImportSession(session, user.id);
+      message.success(
+        `Импорт отменён. Удалено ${res.boq_deleted} элементов BOQ` +
+        (res.additional_deleted > 0 ? `, ДОП: ${res.additional_deleted}` : '') + '.',
+      );
+      if (res.additional_kept > 0) {
+        message.warning(
+          `Оставлено ДОП: ${res.additional_kept} — в них есть элементы, добавленные не этим импортом.`,
+          8,
+        );
+      }
       fetchSessions();
     } catch (err) {
       message.error('Ошибка при отмене импорта: ' + getErrorMessage(err));
@@ -277,6 +297,24 @@ const ImportLog: React.FC = () => {
       width: 100,
       align: 'right',
       render: (val) => <Text strong>{val}</Text>,
+    },
+    {
+      title: 'ДОП',
+      key: 'created_positions',
+      width: 80,
+      align: 'right',
+      render: (_, row) => {
+        if (row.created_positions.length === 0) return <Text type="secondary">—</Text>;
+        return (
+          <Tooltip
+            title={row.created_positions.map((p) => (
+              <div key={p.id}>{p.position_number} — {p.work_name}</div>
+            ))}
+          >
+            <Text strong>{row.created_positions.length}</Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: 'Статус',

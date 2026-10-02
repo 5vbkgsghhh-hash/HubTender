@@ -1,7 +1,12 @@
 import React, { useMemo } from 'react';
 import { Table, Tag, Typography } from 'antd';
 import { useTheme } from '../../../contexts/ThemeContext';
-import type { ParsedBoqItem, PositionUpdateData, ClientPosition } from '../utils/massBoqImportUtils';
+import type {
+  ParsedBoqItem,
+  ParsedAdditionalPosition,
+  PositionUpdateData,
+  ClientPosition,
+} from '../utils/massBoqImportUtils';
 
 const { Text } = Typography;
 
@@ -20,11 +25,15 @@ interface BoqPreviewTableProps {
   positionUpdates: Map<string, PositionUpdateData>;
   clientPositionsMap: Map<string, ClientPosition>;
   existingItemsByPosition: Map<string, ExistingBoqItem[]>;
+  /** Строки «доп»: их элементы — отдельной группой под позицией-родителем. */
+  additionalRows?: ParsedAdditionalPosition[];
 }
 
 interface PreviewRow {
   key: string;
   isGroupHeader: boolean;
+  /** Заголовок группы новой ДОП. */
+  isAdditional?: boolean;
   positionLabel?: string;
   name?: string;
   itemType?: string;
@@ -63,6 +72,7 @@ export const BoqPreviewTable: React.FC<BoqPreviewTableProps> = ({
   positionUpdates,
   clientPositionsMap,
   existingItemsByPosition,
+  additionalRows = [],
 }) => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -71,18 +81,48 @@ export const BoqPreviewTable: React.FC<BoqPreviewTableProps> = ({
 
   const rows = useMemo<PreviewRow[]>(() => {
     const result: PreviewRow[] = [];
+    const renderedDops = new Set<string>();
+
+    const pushIncoming = (items: ParsedBoqItem[], groupKey: string) => {
+      items.forEach((item, idx) => {
+        const qty = item.quantity ?? item.base_quantity ?? null;
+        const amount = (item.unit_rate && qty) ? Math.round(item.unit_rate * qty * 100) / 100 : null;
+        result.push({
+          key: `new-${groupKey}-${idx}`,
+          isGroupHeader: false,
+          name: item.nameText,
+          itemType: item.boq_item_type,
+          quantity: qty,
+          amount,
+          status: 'new',
+        });
+      });
+    };
+
+    const pushDopGroup = (dop: ParsedAdditionalPosition) => {
+      renderedDops.add(dop.tempId);
+      result.push({
+        key: `g-${dop.tempId}`,
+        isGroupHeader: true,
+        isAdditional: true,
+        positionLabel: `${dop.workName || '—'} (строка ${dop.rowIndex})`,
+      });
+      pushIncoming(parsedData.filter(item => item.additionalTempId === dop.tempId), dop.tempId);
+    };
 
     positionUpdates.forEach((_, posNum) => {
       const position = clientPositionsMap.get(posNum);
       if (!position) return;
 
       const existing = existingItemsByPosition.get(position.id) || [];
-      // Матчим по positionNumber через clientPositionsMap (matchedPositionId не заполнен до валидации)
+      // Матчим по positionNumber через clientPositionsMap (matchedPositionId не заполнен до валидации);
+      // элементы блоков «доп» идут не в позицию, а в свои новые ДОП.
       const incoming = parsedData.filter(item =>
-        clientPositionsMap.get(item.positionNumber)?.id === position.id
+        !item.additionalTempId && clientPositionsMap.get(item.positionNumber)?.id === position.id
       );
+      const dops = additionalRows.filter(dop => dop.parentPositionNumber === posNum);
 
-      if (existing.length === 0 && incoming.length === 0) return;
+      if (existing.length === 0 && incoming.length === 0 && dops.length === 0) return;
 
       result.push({
         key: `g-${posNum}`,
@@ -105,23 +145,15 @@ export const BoqPreviewTable: React.FC<BoqPreviewTableProps> = ({
         });
       });
 
-      incoming.forEach((item, idx) => {
-        const qty = item.quantity ?? item.base_quantity ?? null;
-        const amount = (item.unit_rate && qty) ? Math.round(item.unit_rate * qty * 100) / 100 : null;
-        result.push({
-          key: `new-${posNum}-${idx}`,
-          isGroupHeader: false,
-          name: item.nameText,
-          itemType: item.boq_item_type,
-          quantity: qty,
-          amount,
-          status: 'new',
-        });
-      });
+      pushIncoming(incoming, posNum);
+      dops.forEach(pushDopGroup);
     });
 
+    // «доп» без найденной позиции (ошибку покажет валидация) — в конце.
+    additionalRows.filter(dop => !renderedDops.has(dop.tempId)).forEach(pushDopGroup);
+
     return result;
-  }, [parsedData, positionUpdates, clientPositionsMap, existingItemsByPosition]);
+  }, [parsedData, positionUpdates, clientPositionsMap, existingItemsByPosition, additionalRows]);
 
   const columns = [
     {
@@ -131,7 +163,12 @@ export const BoqPreviewTable: React.FC<BoqPreviewTableProps> = ({
       render: (_: unknown, row: PreviewRow) => {
         if (row.isGroupHeader) {
           return {
-            children: <Text strong style={{ fontSize: 12 }}>{row.positionLabel}</Text>,
+            children: (
+              <>
+                {row.isAdditional && <Tag color="green" style={{ fontSize: 11 }}>Новая ДОП</Tag>}
+                <Text strong style={{ fontSize: 12 }}>{row.positionLabel}</Text>
+              </>
+            ),
             props: { colSpan: 5 },
           };
         }

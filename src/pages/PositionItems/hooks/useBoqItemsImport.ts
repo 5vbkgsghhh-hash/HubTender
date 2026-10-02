@@ -1,41 +1,45 @@
 import { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { message } from 'antd';
-import { useAuth } from '../../../contexts/AuthContext';
-import { insertBoqItemWithAudit } from '../../../lib/api/boq';
+import { apiFetch } from '../../../lib/api/client';
 import {
   listWorkNames,
   listMaterialNames,
+  listActiveUnits,
   createWorkName,
   createMaterialName,
 } from '../../../lib/api/nomenclatures';
 import { listDetailCostCategoriesWithCategory } from '../../../lib/api/costs';
-import { getTenderById } from '../../../lib/api/fi';
-import { listBoqItemsFullByPosition } from '../../../lib/api/positions';
 import { getErrorMessage } from '../../../utils/errors';
 import {
-  isWork,
-  isMaterial,
   normalizeString,
   buildNomenclatureLookupKey,
-  calculateTotalAmount,
-  type ImportCurrencyRates,
 } from '../../../utils/boq/importShared';
+import { buildBoqItemsPayload } from '../../../utils/boq/importPayload';
+import {
+  buildAdditionalPositionPayload,
+  formatCreatedAdditionalNumbers,
+  type CreatedAdditionalPosition,
+  type ParsedAdditionalRow,
+} from '../../../utils/boq/additionalImport';
 import { buildMissingNomenclatureInserts } from '../../../utils/boq/nomenclatureImport';
 import type { ParsedBoqItem, ValidationResult, CostCategoryRecord } from '../utils/boqImportTypes';
 import { parseBoqExcelRows, processWorkBindings as processWorkBindingsUtil } from '../utils/boqImportParser';
 import { validateBoqData } from '../utils/boqImportValidation';
 
 // Типы/парсер/валидация вынесены в ../utils/boqImport* (лимит ≤600 строк),
-// общие с mass-импортом хелперы — в src/utils/boq/importShared.ts.
+// общие с mass-импортом хелперы — в src/utils/boq/*.
 
 // ===========================
 // ОСНОВНОЙ ХУК
 // ===========================
 
 export const useBoqItemsImport = () => {
-  const { user } = useAuth();
   const [parsedData, setParsedData] = useState<ParsedBoqItem[]>([]);
+  // Строки «доп» файла и ДОП, созданные сервером по итогам импорта.
+  const [additionalRows, setAdditionalRows] = useState<ParsedAdditionalRow[]>([]);
+  const [createdAdditional, setCreatedAdditional] = useState<CreatedAdditionalPosition[]>([]);
+  const [fileName, setFileName] = useState<string>('');
   const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -47,6 +51,7 @@ export const useBoqItemsImport = () => {
   const [workNamesMap, setWorkNamesMap] = useState<Map<string, string>>(new Map());
   const [materialNamesMap, setMaterialNamesMap] = useState<Map<string, string>>(new Map());
   const [costCategoriesMap, setCostCategoriesMap] = useState<Map<string, string>>(new Map());
+  const [unitCodes, setUnitCodes] = useState<Set<string>>(new Set());
 
   // ===========================
   // ЗАГРУЗКА СПРАВОЧНИКОВ
@@ -55,10 +60,11 @@ export const useBoqItemsImport = () => {
   const loadNomenclature = async () => {
     try {
       {
-      const [allWorks, allMaterials, allCostsRaw] = await Promise.all([
+      const [allWorks, allMaterials, allCostsRaw, units] = await Promise.all([
         listWorkNames(),
         listMaterialNames(),
         listDetailCostCategoriesWithCategory(),
+        listActiveUnits(),
       ]);
       // cost_categories!inner — оставляем только dcc с привязанной категорией.
       const allCosts = (allCostsRaw as unknown as CostCategoryRecord[])
@@ -86,7 +92,7 @@ export const useBoqItemsImport = () => {
         nextCostsMap.set(fullPath, cost.id);
 
         if (costLogCount < 5 || cost.name.includes('/') || costCategoryName.includes('/')) {
-          console.log('[CostCategory] Р—Р°РіСЂСѓР¶РµРЅР° Р·Р°С‚СЂР°С‚Р°:', {
+          console.log('[CostCategory] Загружена затрата:', {
             category: costCategoryName,
             detail: cost.name,
             location: cost.location,
@@ -100,8 +106,9 @@ export const useBoqItemsImport = () => {
       setWorkNamesMap(nextWorksMap);
       setMaterialNamesMap(nextMaterialsMap);
       setCostCategoriesMap(nextCostsMap);
+      setUnitCodes(new Set(units.map((u) => u.code)));
 
-      console.log('[BoqImport] Р—Р°РіСЂСѓР¶РµРЅРѕ СЃРїСЂР°РІРѕС‡РЅРёРєРѕРІ:', {
+      console.log('[BoqImport] Загружено справочников:', {
         works: nextWorksMap.size,
         materials: nextMaterialsMap.size,
         costs: nextCostsMap.size,
@@ -120,6 +127,7 @@ export const useBoqItemsImport = () => {
   // ===========================
 
   const parseExcelFile = async (file: File): Promise<boolean> => {
+    setFileName(file.name);
     return new Promise((resolve) => {
       const reader = new FileReader();
 
@@ -133,23 +141,26 @@ export const useBoqItemsImport = () => {
           // Пропускаем заголовок (первая строка)
           const rows = jsonData.slice(1);
 
-          const parsed = parseBoqExcelRows(rows);
+          const { items: parsed, additionalRows: dops } = parseBoqExcelRows(rows);
 
           setParsedData(parsed);
+          setAdditionalRows(dops);
 
           // ЛОГИРОВАНИЕ: Показываем порядок элементов после парсинга
           console.log('=== ПАРСИНГ EXCEL ЗАВЕРШЁН ===');
-          console.log(`Всего строк: ${parsed.length}`);
+          console.log(`Всего строк: ${parsed.length}, строк «доп»: ${dops.length}`);
           console.log('Первые 10 элементов из файла (в порядке чтения):');
           parsed.slice(0, 10).forEach((item, idx) => {
             console.log(`  ${idx}: [Строка ${item.rowIndex}] ${item.nameText} (${item.boq_item_type})`);
           });
 
           // Сразу запускаем валидацию
-          const validation = validateParsedData(parsed);
+          const validation = validateParsedData(parsed, dops);
           setValidationResult(validation);
 
-          message.success(`Файл обработан: ${parsed.length} строк`);
+          message.success(
+            `Файл обработан: ${parsed.length} строк${dops.length > 0 ? `, новых ДОП: ${dops.length}` : ''}`,
+          );
           resolve(true);
         } catch (error) {
           console.error('Ошибка парсинга Excel:', error);
@@ -171,8 +182,11 @@ export const useBoqItemsImport = () => {
   // ВАЛИДАЦИЯ (тонкая обёртка над чистой validateBoqData)
   // ===========================
 
-  const validateParsedData = (data: ParsedBoqItem[]): ValidationResult => {
-    const result = validateBoqData(data, { workNamesMap, materialNamesMap, costCategoriesMap });
+  const validateParsedData = (
+    data: ParsedBoqItem[],
+    dops: ParsedAdditionalRow[] = additionalRows,
+  ): ValidationResult => {
+    const result = validateBoqData(data, { workNamesMap, materialNamesMap, costCategoriesMap, unitCodes }, dops);
     setValidationResult(result);
     return result;
   };
@@ -184,149 +198,75 @@ export const useBoqItemsImport = () => {
   const processWorkBindings = processWorkBindingsUtil;
 
   // ===========================
-  // ЗАГРУЗКА КУРСОВ ВАЛЮТ
-  // ===========================
-
-  const loadCurrencyRates = async (tenderId: string): Promise<ImportCurrencyRates> => {
-    try {
-      const tender = await getTenderById(tenderId);
-      if (!tender) {
-        console.error('[BoqImport] Тендер не найден:', tenderId);
-        throw new Error('Тендер не найден');
-      }
-
-      const rates = {
-        usd: tender.usd_rate || 1,
-        eur: tender.eur_rate || 1,
-        cny: tender.cny_rate || 1,
-      };
-
-      console.log('[BoqImport] Курсы валют загружены:', rates);
-
-      return rates;
-    } catch (error) {
-      console.error('[BoqImport] Критическая ошибка загрузки курсов валют:', error);
-      throw error;
-    }
-  };
-
-  // ===========================
   // ВСТАВКА В БД
   // ===========================
 
+  /**
+   * Тот же атомарный POST /api/v1/imports/boq, что у массового импорта: одна
+   * транзакция (ДОП из строк «доп» создаются вместе с элементами), суммы
+   * считает сервер, сессия попадает в журнал импортов — её можно отменить.
+   * additionalParentId — позиция, к которой создаются ДОП (у ДОП — её родитель).
+   */
   const insertBoqItems = async (
     data: ParsedBoqItem[],
     positionId: string,
-    tenderId: string
+    tenderId: string,
+    additionalParentId: string,
   ): Promise<boolean> => {
-    let currentRow: number | null = null;
     try {
       setUploading(true);
-      setUploadProgress(0);
+      setUploadProgress(5);
       setImportStatus('running');
       setImportError(null);
+      setCreatedAdditional([]);
 
-      // Загружаем курсы валют из tender
-      const rates = await loadCurrencyRates(tenderId);
+      const itemsPayload = buildBoqItemsPayload(
+        data.map((item) => ({ ...item, matchedPositionId: item.additionalTempId ? undefined : positionId })),
+      );
+      const additionalPayload = additionalRows.map((row) => buildAdditionalPositionPayload(row, additionalParentId));
 
-      // Получаем максимальный sort_number из существующих записей.
-      // Go: одна выборка boq_items позиции; max считаем на клиенте.
-      const existingItems = await listBoqItemsFullByPosition(positionId);
-      const maxSortNumber = existingItems.reduce<number>((m, it) => {
-        const sn = (it as { sort_number?: number | null }).sort_number;
-        return typeof sn === 'number' && sn > m ? sn : m;
-      }, -1);
-      console.log('[BoqImport] Максимальный sort_number:', maxSortNumber);
+      setUploadProgress(15);
 
-      const totalItems = data.length;
-      let processedItems = 0;
-
-      // Map для хранения tempId -> realId (для привязки материалов к работам)
-      const workIdMap = new Map<string, string>();
-
-      // Вставляем элементы в том же порядке, что и в файле
-      for (let i = 0; i < data.length; i++) {
-        const item = data[i];
-        currentRow = item.rowIndex;
-        const actualSortNumber = maxSortNumber + 1 + i;
-
-        // Логирование первых 3 элементов для отладки сортировки
-        if (i < 3) {
-          console.log(`[BoqImport] Вставка элемента ${i}:`, {
-            nameText: item.nameText,
-            type: item.boq_item_type,
-            rowIndex: item.rowIndex,
-            sort_number: actualSortNumber,
-          });
-        }
-
-        // Для материалов с привязкой к работе - заменяем временный ID на реальный
-        const parentId = item.parent_work_item_id
-          ? workIdMap.get(item.parent_work_item_id) || null
-          : null;
-
-        // Рассчитываем итоговую сумму с передачей курсов валют
-        const totalAmount = calculateTotalAmount(item, rates);
-
-        // Формируем данные для вставки
-        const insertData: Record<string, unknown> = {
+      const resp = await apiFetch<{
+        inserted_items_count: number;
+        created_additional_positions?: CreatedAdditionalPosition[];
+      }>('/api/v1/imports/boq', {
+        method: 'POST',
+        timeoutMs: 0,
+        body: JSON.stringify({
           tender_id: tenderId,
-          client_position_id: positionId,
-          sort_number: actualSortNumber,
-          boq_item_type: item.boq_item_type,
-          unit_code: item.unit_code,
-          quantity: item.quantity,
-          base_quantity: item.base_quantity,
-          consumption_coefficient: item.consumption_coefficient,
-          conversion_coefficient: item.conversion_coefficient,
-          currency_type: item.currency_type,
-          delivery_price_type: item.delivery_price_type,
-          delivery_amount: item.delivery_amount,
-          unit_rate: item.unit_rate,
-          total_amount: totalAmount,
-          detail_cost_category_id: item.detail_cost_category_id,
-          quote_link: item.quote_link,
-          description: item.description,
-        };
+          file_name: fileName || 'import.xlsx',
+          items: itemsPayload,
+          position_updates: [],
+          additional_positions: additionalPayload,
+        }),
+      });
+      const created = resp.created_additional_positions ?? [];
+      setCreatedAdditional(created);
+      setUploadProgress(100);
 
-        // Добавляем специфичные поля для работ
-        if (isWork(item.boq_item_type)) {
-          insertData.work_name_id = item.work_name_id;
-        }
-
-        // Добавляем специфичные поля для материалов
-        if (isMaterial(item.boq_item_type)) {
-          insertData.material_type = item.material_type;
-          insertData.material_name_id = item.material_name_id;
-          insertData.parent_work_item_id = parentId;
-        }
-
-        // Вставляем элемент
-        const { data: inserted } = await insertBoqItemWithAudit(user?.id, insertData);
-
-        if (!inserted?.id) {
-          throw new Error(`Row ${item.rowIndex}: insert RPC did not return BOQ item ID`);
-        }
-
-        // Сохраняем ID работы для привязки материалов
-        if (isWork(item.boq_item_type) && item.tempId && inserted?.id) {
-          workIdMap.set(item.tempId, inserted.id);
-        }
-
-        processedItems++;
-        setUploadProgress(Math.round((processedItems / totalItems) * 100));
+      // Сервер атомарен и вставляет ровно отправленное — расхождение = потеря данных.
+      if (resp.inserted_items_count !== itemsPayload.length || created.length !== additionalPayload.length) {
+        const mismatchMsg =
+          `Импортировано ${resp.inserted_items_count} из ${itemsPayload.length} элементов, ` +
+          `создано ${created.length} из ${additionalPayload.length} ДОП — проверьте позицию.`;
+        message.error(mismatchMsg, 10);
+        setImportError(mismatchMsg);
+        setImportStatus('error');
+        return false;
       }
 
-      console.log('[BoqImport] Импорт завершён. Всего элементов:', totalItems);
-      console.log('[BoqImport] Диапазон sort_number:', `${maxSortNumber + 1} - ${maxSortNumber + totalItems}`);
-      message.success(`Успешно импортировано ${totalItems} элементов`);
+      message.success(
+        `Успешно импортировано ${resp.inserted_items_count} элементов` +
+        (created.length > 0 ? `, создано ДОП: ${created.length} (${formatCreatedAdditionalNumbers(created)})` : ''),
+      );
       setImportStatus('success');
       return true;
     } catch (error) {
+      // Ошибки данных сервер возвращает с номером строки Excel («Строка N: …»).
       const detail = getErrorMessage(error);
-      const withRow = currentRow != null ? `Строка ${currentRow}: ${detail}` : detail;
       console.error('Ошибка импорта:', error);
-      setImportError(withRow);
+      setImportError(detail);
       setImportStatus('error');
       message.error('Ошибка при импорте: ' + detail);
       return false;
@@ -373,9 +313,9 @@ export const useBoqItemsImport = () => {
 
       const total = uniqueWorksToInsert.length + uniqueMaterialsToInsert.length;
       if (total > 0) {
-        message.success(`Р”РѕР±Р°РІР»РµРЅРѕ РІ РЅРѕРјРµРЅРєР»Р°С‚СѓСЂСѓ: ${total} Р·Р°РїРёСЃРµР№. РўРµРїРµСЂСЊ РЅР°Р¶РјРёС‚Рµ В«Р—Р°РіСЂСѓР·РёС‚СЊВ».`);
+        message.success(`Добавлено в номенклатуру: ${total} записей. Теперь нажмите «Загрузить».`);
       } else {
-        message.info('РџРѕРґС…РѕРґСЏС‰РёРµ Р·Р°РїРёСЃРё СѓР¶Рµ РµСЃС‚СЊ РІ РЅРѕРјРµРЅРєР»Р°С‚СѓСЂРµ. РўРµРїРµСЂСЊ РЅР°Р¶РјРёС‚Рµ В«Р—Р°РіСЂСѓР·РёС‚СЊВ».');
+        message.info('Подходящие записи уже есть в номенклатуре. Теперь нажмите «Загрузить».');
       }
 
       return true;
@@ -389,6 +329,9 @@ export const useBoqItemsImport = () => {
 
   const reset = () => {
     setParsedData([]);
+    setAdditionalRows([]);
+    setCreatedAdditional([]);
+    setFileName('');
     setValidationResult(null);
     setUploadProgress(0);
     setImportStatus('idle');
@@ -398,6 +341,8 @@ export const useBoqItemsImport = () => {
   return {
     // Данные
     parsedData,
+    additionalRows,
+    createdAdditional,
     validationResult,
     uploading,
     uploadProgress,

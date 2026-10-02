@@ -10,9 +10,11 @@ import { computeLeafPositionIds } from '../../../utils/positions/leafPositions';
 import {
   ClientPosition,
   normalizeString,
+  normalizeForLookup,
   buildNomenclatureLookupKey,
   normalizePositionNumber,
 } from '../utils';
+import type { ExistingAdditionalRef } from '../utils/massBoqImportAdditional';
 
 export type ExistingBoqPreviewItem = {
   id: string;
@@ -36,6 +38,10 @@ export const useMassBoqImportRefs = () => {
   const [costCategoriesMap, setCostCategoriesMap] = useState<Map<string, string>>(new Map());
   const [clientPositionsMap, setClientPositionsMap] = useState<Map<string, ClientPosition>>(new Map());
   const [leafPositionIds, setLeafPositionIds] = useState<Set<string>>(new Set());
+  // Для строк «доп»: родитель существующей ДОП и уже имеющиеся ДОП позиций (запрет дублей).
+  const [positionsById, setPositionsById] = useState<Map<string, ClientPosition>>(new Map());
+  const [existingAdditionalByParent, setExistingAdditionalByParent] =
+    useState<Map<string, ExistingAdditionalRef[]>>(new Map());
 
   // Единицы измерения — для маппинга
   const [availableUnits, setAvailableUnits] = useState<{ code: string; name: string }[]>([]);
@@ -92,15 +98,25 @@ export const useMassBoqImportRefs = () => {
       );
 
       const positionsMap = new Map<string, ClientPosition>();
+      const byId = new Map<string, ClientPosition>();
+      const additionalByParent = new Map<string, ExistingAdditionalRef[]>();
       positionsData.forEach((p) => {
         const normalizedNum = normalizePositionNumber(p.position_number);
-        positionsMap.set(normalizedNum, {
+        const position: ClientPosition = {
           id: p.id,
           position_number: Number(p.position_number),
           work_name: p.work_name ?? '',
           hierarchy_level: p.hierarchy_level,
           is_additional: p.is_additional,
-        });
+          parent_position_id: p.parent_position_id,
+        };
+        positionsMap.set(normalizedNum, position);
+        byId.set(p.id, position);
+        if (p.is_additional && p.parent_position_id) {
+          const refs = additionalByParent.get(p.parent_position_id) ?? [];
+          refs.push({ key: normalizeForLookup(position.work_name), number: normalizedNum, workName: position.work_name });
+          additionalByParent.set(p.parent_position_id, refs);
+        }
       });
 
       const leafIds = computeLeafPositionIds(positionsData);
@@ -115,6 +131,8 @@ export const useMassBoqImportRefs = () => {
       setMaterialNamesMap(materialsMap);
       setCostCategoriesMap(costsMap);
       setClientPositionsMap(positionsMap);
+      setPositionsById(byId);
+      setExistingAdditionalByParent(additionalByParent);
       setLeafPositionIds(leafIds);
       setAvailableUnits((unitsResult.data || []) as { code: string; name: string }[]);
 
@@ -155,6 +173,8 @@ export const useMassBoqImportRefs = () => {
     costCategoriesMap,
     clientPositionsMap,
     leafPositionIds,
+    positionsById,
+    existingAdditionalByParent,
     availableUnits,
     existingItemsByPosition,
     loadNomenclature,

@@ -297,7 +297,8 @@ CREATE TABLE IF NOT EXISTS public.import_sessions (
     positions_snapshot jsonb,
     imported_at timestamp with time zone NOT NULL DEFAULT now(),
     cancelled_at timestamp with time zone,
-    cancelled_by uuid
+    cancelled_by uuid,
+    created_positions jsonb NOT NULL DEFAULT '[]'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS public.templates (

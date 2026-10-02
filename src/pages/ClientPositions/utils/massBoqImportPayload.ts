@@ -8,7 +8,14 @@
 // авторитетную сумму каждой строки считает сервер (calc.CalculateBoqItemTotalAmount)
 // по фактическим курсам тендера; поле в API осталось только для обратной
 // совместимости старых клиентов как диагностическое контрольное значение.
-import { ParsedBoqItem, PositionUpdateData, isWork, isMaterial } from './massBoqImportUtils';
+import { ParsedBoqItem, PositionUpdateData, ParsedAdditionalPosition } from './massBoqImportUtils';
+import {
+  buildAdditionalPositionPayload,
+  type AdditionalPositionPayload,
+} from '../../../utils/boq/additionalImport';
+
+// Билдер элементов общий с одиночным импортом (PositionItems).
+export { buildBoqItemsPayload } from '../../../utils/boq/importPayload';
 
 export const buildPositionUpdatesPayload = (
   positionUpdates: Map<string, PositionUpdateData>,
@@ -35,69 +42,13 @@ export const buildPositionUpdatesPayload = (
     });
 };
 
-export const buildBoqItemsPayload = (
-  data: ParsedBoqItem[],
-): Record<string, unknown>[] => {
-  return data
-    .filter(item => item.matchedPositionId)
-    .map((item) => {
-      const payload: Record<string, unknown> = {
-        row_index: item.rowIndex,
-        client_position_id: item.matchedPositionId,
-        boq_item_type: item.boq_item_type,
-        unit_code: item.unit_code,
-        quantity: item.quantity,
-      };
-
-      if (item.base_quantity !== undefined) {
-        payload.base_quantity = item.base_quantity;
-      }
-      if (item.consumption_coefficient !== undefined) {
-        payload.consumption_coefficient = item.consumption_coefficient;
-      }
-      if (item.conversion_coefficient !== undefined) {
-        payload.conversion_coefficient = item.conversion_coefficient;
-      }
-      if (item.currency_type) {
-        payload.currency_type = item.currency_type;
-      }
-      if (item.delivery_price_type) {
-        payload.delivery_price_type = item.delivery_price_type;
-      }
-      if (item.delivery_amount !== undefined) {
-        payload.delivery_amount = item.delivery_amount;
-      }
-      if (item.unit_rate !== undefined) {
-        payload.unit_rate = item.unit_rate;
-      }
-      if (item.detail_cost_category_id) {
-        payload.detail_cost_category_id = item.detail_cost_category_id;
-      }
-      if (item.quote_link) {
-        payload.quote_link = item.quote_link;
-      }
-      if (item.description) {
-        payload.description = item.description;
-      }
-
-      if (isWork(item.boq_item_type)) {
-        payload.work_name_id = item.work_name_id;
-        if (item.tempId) {
-          payload.temp_id = item.tempId;
-        }
-      }
-
-      if (isMaterial(item.boq_item_type)) {
-        payload.material_type = item.material_type;
-        payload.material_name_id = item.material_name_id;
-        if (item.parent_work_item_id) {
-          payload.parent_work_temp_id = item.parent_work_item_id;
-        }
-      }
-
-      return payload;
-    });
-};
+/** Строки «доп» с найденной позицией-родителем (заполняет валидация). */
+export const buildAdditionalPositionsPayload = (
+  additionalPositions: ParsedAdditionalPosition[],
+): AdditionalPositionPayload[] =>
+  additionalPositions
+    .filter((dop) => dop.parentPositionId)
+    .map((dop) => buildAdditionalPositionPayload(dop, dop.parentPositionId as string));
 
 /** Диагностическая запись отчёта сервера: legacy контрольное значение
  *  total_amount разошлось с авторитетным серверным расчётом. Warning, не ошибка;
@@ -132,6 +83,8 @@ export const analyzeImportMismatch = (
   itemsPayloadLength: number,
   positionUpdatesPayloadLength: number,
   data: ParsedBoqItem[],
+  createdAdditionalCount = 0,
+  additionalPayloadLength = 0,
 ): ImportMismatchAnalysis => {
   const expectedItems = itemsPayloadLength;
   const expectedPositions = positionUpdatesPayloadLength;
@@ -140,15 +93,17 @@ export const analyzeImportMismatch = (
   const mismatch =
     insertedItemsCount !== expectedItems ||
     updatedPositionsCount !== expectedPositions ||
+    createdAdditionalCount !== additionalPayloadLength ||
     droppedItems > 0;
 
   const droppedRows = mismatch
-    ? data.filter(item => !item.matchedPositionId).map(item => item.rowIndex)
+    ? data.filter(item => !item.matchedPositionId && !item.additionalTempId).map(item => item.rowIndex)
     : [];
 
   const mismatchMsg =
     `Импортировано ${insertedItemsCount} из ${expectedItems} элементов, ` +
     `обновлено ${updatedPositionsCount} из ${expectedPositions} позиций` +
+    (additionalPayloadLength > 0 ? `, создано ${createdAdditionalCount} из ${additionalPayloadLength} ДОП` : '') +
     (droppedItems > 0 ? `; пропущено строк без позиции: ${droppedItems}` : '') +
     ' — часть данных не загружена. Проверьте позиции.';
 

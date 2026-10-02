@@ -1,6 +1,10 @@
 import React from 'react';
 import { Alert, Progress, Space, Table } from 'antd';
 import type { ImportTotalMismatch } from '../../utils/massBoqImportPayload';
+import {
+  formatCreatedAdditionalNumbers,
+  type CreatedAdditionalPosition,
+} from '../../../../utils/boq/additionalImport';
 
 const fmtMoney = (v: number) =>
   v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -40,9 +44,13 @@ export const ImportProgressStep: React.FC<{
   parsedDataLength: number;
   matchedCount: number;
   positionOnlyCount: number;
+  /** Строк «доп» в файле и ДОП, созданных сервером. */
+  additionalCount: number;
+  createdAdditional: CreatedAdditionalPosition[];
 }> = ({
   importStatus, importError, importMismatches, insertedCount,
   uploadProgress, parsedDataLength, matchedCount, positionOnlyCount,
+  additionalCount, createdAdditional,
 }) => (
   <Space direction="vertical" style={{ width: '100%' }} size="middle">
     {importStatus === 'running' && (
@@ -51,9 +59,10 @@ export const ImportProgressStep: React.FC<{
           type="info"
           message="Импорт данных"
           description={
-            parsedDataLength > 0
+            (parsedDataLength > 0
               ? `Импортируется ${parsedDataLength} элементов в ${matchedCount} позиций${positionOnlyCount > 0 ? ` + обновление ${positionOnlyCount} поз. ГП` : ''}`
-              : `Обновляется ${positionOnlyCount} позиций (данные ГП)`
+              : `Обновляется ${positionOnlyCount} позиций (данные ГП)`) +
+            (additionalCount > 0 ? `, создаётся ДОП: ${additionalCount}` : '')
           }
           showIcon
         />
@@ -70,6 +79,9 @@ export const ImportProgressStep: React.FC<{
         message="Импорт завершён успешно!"
         description={
           `Импортировано строк: ${insertedCount}. Ошибок: 0. ` +
+          (createdAdditional.length > 0
+            ? `Создано ДОП: ${createdAdditional.length} (${formatCreatedAdditionalNumbers(createdAdditional)}). `
+            : '') +
           `Расхождений сумм: ${importMismatches.length}.`
         }
         showIcon

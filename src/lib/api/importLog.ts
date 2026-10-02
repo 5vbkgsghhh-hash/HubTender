@@ -2,6 +2,7 @@
 // Cancel — одна атомарная транзакция на сервере (delete+restore+mark).
 
 import { apiFetch } from './client';
+import type { CreatedAdditionalPosition } from '../../utils/boq/additionalImport';
 
 export interface ImportSession {
   id: string;
@@ -17,6 +18,8 @@ export interface ImportSession {
     manual_volume: number | null;
     manual_note: string | null;
   }> | null;
+  /** ДОП, созданные строками «доп»; отмена импорта удаляет их, если они пусты. */
+  created_positions?: CreatedAdditionalPosition[] | null;
 }
 
 export interface ImportLogUser {
@@ -36,6 +39,9 @@ export interface ImportLogTender {
 export interface CancelImportSessionResult {
   boq_deleted: number;
   positions_restored: number;
+  /** Удалённые ДОП импорта и оставленные (в них есть элементы не из этого импорта). */
+  additional_deleted: number;
+  additional_kept: number;
 }
 
 export async function fetchImportSessions(tenderId?: string | null): Promise<ImportSession[]> {
@@ -73,9 +79,9 @@ export async function fetchAllTendersForFilter(): Promise<ImportLogTender[]> {
 }
 
 /**
- * Cancel an import session. Go BFF performs delete+restore+mark in a single
- * transaction (cancelledBy берётся из JWT — параметр оставлен для
- * совместимости сигнатуры).
+ * Cancel an import session. Go BFF performs delete (items + empty ДОП of the
+ * import) + restore + recompute + mark in a single transaction (cancelledBy
+ * берётся из JWT — параметр оставлен для совместимости сигнатуры).
  */
 export async function cancelImportSession(
   session: ImportSession,

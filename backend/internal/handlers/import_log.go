@@ -125,6 +125,8 @@ func (h *ImportLogHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 			apierr.Forbidden("можно отменять только свои импорты").Render(w)
 		case errors.Is(err, repository.ErrImportSessionNotFound):
 			apierr.NotFound("import session not found").Render(w)
+		case errors.Is(err, repository.ErrImportSessionAlreadyCancelled):
+			apierr.Conflict("импорт уже отменён").Render(w)
 		default:
 			apierr.InternalFromErr(w, r, err, "failed to cancel import session")
 		}

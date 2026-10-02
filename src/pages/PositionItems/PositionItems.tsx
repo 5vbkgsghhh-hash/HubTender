@@ -448,10 +448,11 @@ const PositionItems: React.FC<PositionItemsProps> = ({ positionId, deepLinkItemI
           open={importModalVisible}
           positionId={positionId}
           tenderId={position.tender_id}
+          // Строки «доп» создают ДОП к позиции заказчика; на странице ДОП — к её родителю.
+          additionalParentId={(position.is_additional && position.parent_position_id) || positionId}
           onClose={() => {
             setImportModalVisible(false);
-            // Обновляем всегда: при ошибке часть элементов уже вставлена
-            // (вставка идёт по одному), иначе они не появятся до перезагрузки.
+            // Импорт атомарный; обновляем после любого закрытия, чтобы показать результат.
             fetchItems();
           }}
         />

@@ -1,5 +1,6 @@
 import {
   ParsedBoqItem,
+  ParsedAdditionalPosition,
   PositionUpdateData,
   normalizePositionNumber,
   normalizeMaterialType,
@@ -8,21 +9,28 @@ import {
   parseNumber,
   parseBoolean,
 } from './massBoqImportUtils';
+import { isAdditionalRowMarker, parseAdditionalRow } from '../../../utils/boq/additionalImport';
 
 export interface ParseExcelResult {
   parsed: ParsedBoqItem[];
   posUpdates: Map<string, PositionUpdateData>;
+  additionalPositions: ParsedAdditionalPosition[];
 }
 
 export const parseExcelData = (rows: unknown[]): ParseExcelResult => {
   const parsed: ParsedBoqItem[] = [];
   const posUpdates = new Map<string, PositionUpdateData>();
+  const additionalPositions: ParsedAdditionalPosition[] = [];
 
   // Допустимые типы BOQ элементов
   const validBoqTypes = ['раб', 'суб-раб', 'раб-комп.', 'мат', 'суб-мат', 'мат-комп.'];
 
   // Текущий номер позиции (наследуется от родительской строки)
   let currentPositionNumber = '';
+
+  // Открытый блок «доп»: строки работ/материалов без номера в колонке 2 идут в
+  // эту новую ДОП. Блок закрывает следующая строка с номером или новая «доп».
+  let currentAdditional: ParsedAdditionalPosition | null = null;
 
   const hasStandaloneMaterialPayload = (cells: unknown[]): boolean => {
     return Boolean(
@@ -45,6 +53,23 @@ export const parseExcelData = (rows: unknown[]): ParseExcelResult => {
 
     // Номер позиции из колонки 1 (вторая колонка в Excel)
     const rowPositionNumber = normalizePositionNumber(cells[1] as string | number | null | undefined);
+
+    // Строка «доп» — новая ДОП к позиции заказчика выше. Это не заголовок
+    // позиции: иначе её кол-во/примечание затёрли бы данные ГП родителя.
+    if (isAdditionalRowMarker(cells[4])) {
+      currentAdditional = {
+        ...parseAdditionalRow(cells, rowNum),
+        parentPositionNumber: currentPositionNumber,
+        columnB: rowPositionNumber,
+      };
+      additionalPositions.push(currentAdditional);
+      return;
+    }
+
+    // Строка с номером закрывает блок «доп».
+    if (rowPositionNumber) {
+      currentAdditional = null;
+    }
 
     // Тип элемента BOQ из колонки 4.
     // Независимый материал выводим только для дочерней BOQ-строки без номера позиции.
@@ -105,10 +130,16 @@ export const parseExcelData = (rows: unknown[]): ParseExcelResult => {
       return;
     }
 
-    // Используем унаследованный номер позиции
-    const effectivePositionNumber = rowPositionNumber || currentPositionNumber;
+    // Элемент блока «доп» (колонка 2 пустая) — в новую ДОП; positionNumber —
+    // номер родителя, только для отображения.
+    const additional = rowPositionNumber ? null : currentAdditional;
 
-    if (!effectivePositionNumber) {
+    // Используем унаследованный номер позиции
+    const effectivePositionNumber = additional
+      ? additional.parentPositionNumber
+      : rowPositionNumber || currentPositionNumber;
+
+    if (!effectivePositionNumber && !additional) {
       console.warn(`[MassBoqImport] Строка ${rowNum}: пропущена - нет номера позиции`);
       return;
     }
@@ -141,9 +172,15 @@ export const parseExcelData = (rows: unknown[]): ParseExcelResult => {
       description: cells[19] ? String(cells[19]).trim() : undefined,
 
       sort_number: index,
+      ...(additional ? { additionalTempId: additional.tempId } : {}),
     };
 
     parsed.push(item);
+
+    if (additional) {
+      additional.itemsCount++;
+      return;
+    }
 
     // Обновляем счетчик элементов для позиции
     const existing = posUpdates.get(effectivePositionNumber) || {
@@ -158,6 +195,9 @@ export const parseExcelData = (rows: unknown[]): ParseExcelResult => {
   console.log('=== ПАРСИНГ EXCEL (МАССОВЫЙ) ЗАВЕРШЁН ===');
   console.log(`Всего элементов BOQ: ${parsed.length}`);
   console.log(`Уникальных позиций: ${posUpdates.size}`);
+  if (additionalPositions.length > 0) {
+    console.log(`Новых ДОП (строки «доп»): ${additionalPositions.length}`);
+  }
 
   const positionOnlyCount = Array.from(posUpdates.values()).filter(
     p => p.itemsCount === 0 && (p.manualVolume !== undefined || p.manualNote !== undefined)
@@ -182,5 +222,5 @@ export const parseExcelData = (rows: unknown[]): ParseExcelResult => {
   });
   console.log('Элементов по позициям:', Object.fromEntries(byPosition));
 
-  return { parsed, posUpdates };
+  return { parsed, posUpdates, additionalPositions };
 };

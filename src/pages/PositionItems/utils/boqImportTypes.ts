@@ -5,6 +5,9 @@
 export interface ParsedBoqItem {
   rowIndex: number;
 
+  /** Элемент блока «доп»: уходит в новую ДОП (tempId строки «доп»), а не в текущую позицию. */
+  additionalTempId?: string;
+
   // Основные поля
   boq_item_type: 'раб' | 'суб-раб' | 'раб-комп.' | 'мат' | 'суб-мат' | 'мат-комп.';
   material_type?: 'основн.' | 'вспомогат.';
@@ -48,7 +51,7 @@ export interface ParsedBoqItem {
 
 export interface ValidationError {
   rowIndex: number;
-  type: 'missing_nomenclature' | 'unit_mismatch' | 'missing_cost' | 'invalid_type' | 'missing_field' | 'binding_error';
+  type: 'missing_nomenclature' | 'unit_mismatch' | 'missing_cost' | 'invalid_type' | 'missing_field' | 'binding_error' | 'additional_error';
   field: string;
   message: string;
   severity: 'error' | 'warning';

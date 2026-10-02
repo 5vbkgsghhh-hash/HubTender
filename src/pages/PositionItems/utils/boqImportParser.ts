@@ -4,6 +4,11 @@ import {
   parseNumber,
   parseBoolean,
 } from '../../../utils/boq/importShared';
+import {
+  isAdditionalRowMarker,
+  parseAdditionalRow,
+  type ParsedAdditionalRow,
+} from '../../../utils/boq/additionalImport';
 import type { ParsedBoqItem, ValidationError } from './boqImportTypes';
 
 // Нормализация типа материала (поддержка разных вариантов написания)
@@ -73,12 +78,21 @@ export const normalizeDeliveryPriceType = (value: string | undefined): 'в це�
   return result;
 };
 
+export interface ParsedBoqExcel {
+  items: ParsedBoqItem[];
+  /** Строки «доп»: новые ДОП к позиции; элементы ниже уходят в них. */
+  additionalRows: ParsedAdditionalRow[];
+}
+
 /**
  * Чистый маппинг строк Excel (без заголовка) в ParsedBoqItem[] —
- * тело parseExcelFile, вынесенное из хука без изменений логики.
+ * тело parseExcelFile, вынесенное из хука. Строки до первой «доп» идут в
+ * текущую позицию, после «доп» — в эту новую ДОП до следующей «доп».
  */
-export const parseBoqExcelRows = (rows: unknown[]): ParsedBoqItem[] => {
+export const parseBoqExcelRows = (rows: unknown[]): ParsedBoqExcel => {
   const parsed: ParsedBoqItem[] = [];
+  const additionalRows: ParsedAdditionalRow[] = [];
+  let currentAdditional: ParsedAdditionalRow | null = null;
 
   rows.forEach((row: unknown, index: number) => {
     if (!Array.isArray(row)) return;
@@ -90,9 +104,18 @@ export const parseBoqExcelRows = (rows: unknown[]): ParsedBoqItem[] => {
     const cells = row as unknown[];
     const rowNum = index + 2; // +2 потому что индекс с 0 и пропустили заголовок
 
+    // Строка «доп» — новая ДОП, сама элементом не является.
+    if (isAdditionalRowMarker(cells[4])) {
+      currentAdditional = parseAdditionalRow(cells, rowNum);
+      additionalRows.push(currentAdditional);
+      return;
+    }
+
     // Маппинг колонок согласно структуре из шаблона
     const item: ParsedBoqItem = {
       rowIndex: rowNum,
+
+      ...(currentAdditional ? { additionalTempId: currentAdditional.tempId } : {}),
 
       // Колонка 4: Тип элемента
       boq_item_type: cells[4] ? String(cells[4]).trim() as ParsedBoqItem['boq_item_type'] : 'мат',
@@ -145,9 +168,12 @@ export const parseBoqExcelRows = (rows: unknown[]): ParsedBoqItem[] => {
     };
 
     parsed.push(item);
+    if (currentAdditional) {
+      currentAdditional.itemsCount++;
+    }
   });
 
-  return parsed;
+  return { items: parsed, additionalRows };
 };
 
 /**
@@ -158,8 +184,14 @@ export const parseBoqExcelRows = (rows: unknown[]): ParsedBoqItem[] => {
 export const processWorkBindings = (data: ParsedBoqItem[]): ValidationError[] => {
   const errors: ValidationError[] = [];
   let lastWork: ParsedBoqItem | null = null;
+  // Привязка не пересекает границу ДОП: в новом блоке «доп» работа ищется заново.
+  let currentBlock: string | undefined;
 
   data.forEach((item) => {
+    if (item.additionalTempId !== currentBlock) {
+      currentBlock = item.additionalTempId;
+      lastWork = null;
+    }
     if (isWork(item.boq_item_type)) {
       lastWork = item;
       item.tempId = `work_${item.rowIndex}`;

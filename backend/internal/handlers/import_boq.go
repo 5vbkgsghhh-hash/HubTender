@@ -35,6 +35,9 @@ type importBoqReq struct {
 	FileName        string                            `json:"file_name" validate:"required"`
 	Items           []repository.ImportBoqItem        `json:"items"`
 	PositionUpdates []repository.ImportPositionUpdate `json:"position_updates"`
+	// AdditionalPositions — строки «доп» (новые ДОП); элементы ссылаются на них
+	// через client_position_temp_id.
+	AdditionalPositions []repository.ImportAdditionalPosition `json:"additional_positions"`
 }
 
 // importBoqResp is the JSON body returned on success. TotalMismatches is the
@@ -47,6 +50,8 @@ type importBoqResp struct {
 	UpdatedPositionsCount int                              `json:"updated_positions_count"`
 	TotalMismatchCount    int                              `json:"total_mismatch_count"`
 	TotalMismatches       []repository.ImportTotalMismatch `json:"total_mismatches"`
+	// CreatedAdditionalPositions — ДОП, созданные строками «доп».
+	CreatedAdditionalPositions []repository.CreatedAdditionalPosition `json:"created_additional_positions"`
 }
 
 // BulkImport handles POST /api/v1/imports/boq.
@@ -73,11 +78,12 @@ func (h *ImportBoqHandler) BulkImport(w http.ResponseWriter, r *http.Request) {
 
 	// Nil slices from JSON decode (omitted keys) are safe — repo handles them.
 	in := repository.ImportInput{
-		TenderID:        req.TenderID,
-		FileName:        req.FileName,
-		UserID:          authUser.ID,
-		Items:           req.Items,
-		PositionUpdates: req.PositionUpdates,
+		TenderID:            req.TenderID,
+		FileName:            req.FileName,
+		UserID:              authUser.ID,
+		Items:               req.Items,
+		PositionUpdates:     req.PositionUpdates,
+		AdditionalPositions: req.AdditionalPositions,
 	}
 
 	result, err := h.svc.BulkImport(r.Context(), in)
@@ -110,11 +116,16 @@ func (h *ImportBoqHandler) BulkImport(w http.ResponseWriter, r *http.Request) {
 	if mismatches == nil {
 		mismatches = []repository.ImportTotalMismatch{}
 	}
+	createdDops := result.CreatedAdditionalPositions
+	if createdDops == nil {
+		createdDops = []repository.CreatedAdditionalPosition{}
+	}
 	renderJSON(w, r, http.StatusOK, importBoqResp{
-		ImportSessionID:       result.ImportSessionID,
-		InsertedItemsCount:    result.InsertedItemsCount,
-		UpdatedPositionsCount: result.UpdatedPositionsCount,
-		TotalMismatchCount:    result.TotalMismatchCount,
-		TotalMismatches:       mismatches,
+		ImportSessionID:            result.ImportSessionID,
+		InsertedItemsCount:         result.InsertedItemsCount,
+		UpdatedPositionsCount:      result.UpdatedPositionsCount,
+		TotalMismatchCount:         result.TotalMismatchCount,
+		TotalMismatches:            mismatches,
+		CreatedAdditionalPositions: createdDops,
 	})
 }

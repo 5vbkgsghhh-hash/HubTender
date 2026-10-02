@@ -67,6 +67,30 @@ export const ValidationIssuesPanels: React.FC<{
             />
           )}
 
+          {/* Строки «доп» (новые ДОП) */}
+          {(() => {
+            const additionalErrors = validationResult.errors.filter(e => e.type === 'additional_error');
+            if (additionalErrors.length === 0) return null;
+            return (
+              <Alert
+                message={`Строки «доп» — новые ДОП (${additionalErrors.length})`}
+                description={
+                  <List
+                    size="small"
+                    dataSource={additionalErrors}
+                    renderItem={item => (
+                      <List.Item>
+                        <Text type="danger">Строка {item.rowIndex}: {item.message}</Text>
+                      </List.Item>
+                    )}
+                  />
+                }
+                type="error"
+                style={{ marginBottom: 8 }}
+              />
+            );
+          })()}
+
           {/* Отсутствующая номенклатура — можно добавить кнопкой в футере */}
           {validationResult.missingNomenclature.works.length > 0 && (
             <Alert
@@ -135,7 +159,7 @@ export const ValidationIssuesPanels: React.FC<{
           {/* Прочие ошибки (отсутствующие поля, неверные типы, ошибки привязки) */}
           {(() => {
             const otherErrors = validationResult.errors.filter(
-              e => !['position_not_found', 'missing_nomenclature', 'missing_cost', 'non_leaf_position'].includes(e.type)
+              e => !['position_not_found', 'missing_nomenclature', 'missing_cost', 'non_leaf_position', 'additional_error'].includes(e.type)
             );
             if (otherErrors.length === 0) return null;
             return (
