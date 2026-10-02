@@ -34,6 +34,38 @@ func (r *PositionRepo) RecomputePositionTotals(ctx context.Context, positionID s
 	return nil
 }
 
+// recomputePositionTotalsByIDsTx re-aggregates total_material / total_works of
+// the given positions inside the caller's transaction, zeroing the ones left
+// without items (the tender-wide RecomputePositionTotalsForTenderTx only touches
+// positions that have items). IDs may repeat. Unchanged positions are not
+// rewritten, so a patch that does not move money does not bump updated_at or
+// emit a realtime event.
+func recomputePositionTotalsByIDsTx(ctx context.Context, tx pgx.Tx, positionIDs []string) error {
+	if len(positionIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE public.client_positions cp
+		SET total_material = COALESCE(s.tm, 0),
+		    total_works    = COALESCE(s.tw, 0),
+		    updated_at     = NOW()
+		FROM (
+			SELECT p.id,
+				SUM(b.total_amount) FILTER (WHERE b.boq_item_type::text IN ('мат','суб-мат','мат-комп.')) AS tm,
+				SUM(b.total_amount) FILTER (WHERE b.boq_item_type::text IN ('раб','суб-раб','раб-комп.')) AS tw
+			FROM (SELECT DISTINCT id FROM unnest($1::uuid[]) AS u(id)) p
+			LEFT JOIN public.boq_items b ON b.client_position_id = p.id
+			GROUP BY p.id
+		) s
+		WHERE cp.id = s.id
+		  AND (cp.total_material IS DISTINCT FROM COALESCE(s.tm, 0)
+		       OR cp.total_works IS DISTINCT FROM COALESCE(s.tw, 0))
+	`, positionIDs); err != nil {
+		return fmt.Errorf("recomputePositionTotalsByIDsTx: %w", err)
+	}
+	return nil
+}
+
 // ─── recompute linked materials ─────────────────────────────────────────────
 
 // ErrWorkNotFound is returned when the parent work_item is missing.
@@ -115,6 +147,7 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 		RETURNING ` + boqScanCols
 
 	updated := 0
+	positionIDs := make([]string, 0, len(children))
 	for _, c := range children {
 		convVal := 1.0
 		if c.ConversionCoefficient != nil && *c.ConversionCoefficient != 0 {
@@ -148,6 +181,12 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 			return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: audit: %w", err)
 		}
 		updated++
+		// A linked material may sit in another position than its work.
+		positionIDs = append(positionIDs, c.ClientPositionID)
+	}
+
+	if err := recomputePositionTotalsByIDsTx(ctx, tx, positionIDs); err != nil {
+		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

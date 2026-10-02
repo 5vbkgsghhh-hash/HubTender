@@ -191,6 +191,10 @@ func (r *BoqRepo) UpdateBoqItem(ctx context.Context, id string, in BoqItemPatch)
 				return nil, fmt.Errorf("boqRepo.UpdateBoqItem: total_amount scan: %w", err)
 			}
 		}
+		// Итоги позиции — производные от её строк (сумма и тип): в этой же транзакции.
+		if err := recomputePositionTotalsByIDsTx(ctx, tx, []string{newItem.ClientPositionID}); err != nil {
+			return nil, fmt.Errorf("boqRepo.UpdateBoqItem: %w", err)
+		}
 	}
 
 	oldJSON, _ := boqRowJSON(oldItem)
@@ -236,6 +240,9 @@ func (r *BoqRepo) DeleteBoqItem(ctx context.Context, id, changedBy string) (*Boq
 
 	if _, err := tx.Exec(ctx, "DELETE FROM public.boq_items WHERE id = $1", id); err != nil {
 		return nil, fmt.Errorf("boqRepo.DeleteBoqItem: delete: %w", err)
+	}
+	if err := recomputePositionTotalsByIDsTx(ctx, tx, []string{item.ClientPositionID}); err != nil {
+		return nil, fmt.Errorf("boqRepo.DeleteBoqItem: %w", err)
 	}
 
 	// Категория A (0.1.2.4a): удаление строки с materialized commercial values

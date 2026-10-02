@@ -348,6 +348,11 @@ func (r *BoqRepo) CreateBoqItem(ctx context.Context, in CreateBoqItemInput) (*Bo
 		return nil, fmt.Errorf("boqRepo.CreateBoqItem: audit: %w", err)
 	}
 
+	// Position totals are derived from its rows — refreshed in the same tx.
+	if err := recomputePositionTotalsByIDsTx(ctx, tx, []string{item.ClientPositionID}); err != nil {
+		return nil, fmt.Errorf("boqRepo.CreateBoqItem: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("boqRepo.CreateBoqItem: commit: %w", err)
 	}

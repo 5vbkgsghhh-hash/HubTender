@@ -376,33 +376,6 @@ func deleteImportCreatedPositionsTx(ctx context.Context, tx pgx.Tx, createdRaw [
 	return nil
 }
 
-// recomputePositionTotalsByIDsTx re-aggregates total_material / total_works of
-// the given positions, zeroing the ones left without items (the tender-wide
-// RecomputePositionTotalsForTenderTx only touches positions that have items).
-func recomputePositionTotalsByIDsTx(ctx context.Context, tx pgx.Tx, positionIDs []string) error {
-	if len(positionIDs) == 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE public.client_positions cp
-		SET total_material = COALESCE(s.tm, 0),
-		    total_works    = COALESCE(s.tw, 0),
-		    updated_at     = NOW()
-		FROM (
-			SELECT p.id,
-				SUM(b.total_amount) FILTER (WHERE b.boq_item_type::text IN ('мат','суб-мат','мат-комп.')) AS tm,
-				SUM(b.total_amount) FILTER (WHERE b.boq_item_type::text IN ('раб','суб-раб','раб-комп.')) AS tw
-			FROM unnest($1::uuid[]) AS p(id)
-			LEFT JOIN public.boq_items b ON b.client_position_id = p.id
-			GROUP BY p.id
-		) s
-		WHERE cp.id = s.id
-	`, positionIDs); err != nil {
-		return fmt.Errorf("recomputePositionTotalsByIDsTx: %w", err)
-	}
-	return nil
-}
-
 // pgxScanStrings runs a single-text-column query into dst.
 func pgxScanStrings(ctx context.Context, tx pgx.Tx, dst *[]string, q string, args ...any) error {
 	rows, err := tx.Query(ctx, q, args...)
