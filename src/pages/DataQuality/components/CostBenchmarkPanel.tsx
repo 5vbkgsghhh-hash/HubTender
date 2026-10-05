@@ -34,7 +34,13 @@ export const CostBenchmarkPanel: React.FC<Props> = ({ tenderId, isPhone }) => {
   const canEdit = canEditBenchmarkRanges(user?.role_code);
 
   const tree = useMemo(
-    () => (report ? buildBenchmarkTree(report.rows, onlyDeviations) : []),
+    () =>
+      report
+        ? buildBenchmarkTree(report.rows, onlyDeviations, {
+            areaSp: report.area_sp,
+            calculationReady: report.calculation_ready,
+          })
+        : [],
     [report, onlyDeviations],
   );
 
