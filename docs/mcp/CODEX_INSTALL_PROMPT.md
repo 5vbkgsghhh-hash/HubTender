@@ -1,29 +1,25 @@
-# Prompt for the colleague's Codex
+# Direct VOR pricing deployment brief
 
-You are integrating the audited TenderHUB MCP v1 handoff. Work only in the
-clean checkout of `https://github.com/baldmaxim/HubTender` supplied by the user.
+Work from a clean checkout of the authoritative HubTender repository. Review
+the direct-pricing branch against the current `main`; do not reuse the old v1
+handoff patch. Apply `2026_10_tenderhub_direct_pricing.sql` to a backed-up
+staging database after the v1 migration. Run Go tests/build, frontend
+typecheck/build, OAuth/MCP smoke, and the direct pricing UAT in `VERIFY.md`.
 
-1. Read `MANIFEST.json`, `INSTALL.md`, `VERIFY.md`, `ROLLBACK.md`, and
-   `SHA256SUMS.txt` from the handoff package. Verify every checksum first.
-2. Confirm `git status --short` is empty and commit
-   `6cbfa9bcd6ca491f7daaa94347d88d2b7236f31f` is an ancestor of HEAD. Stop and
-   report exact drift if it is not.
-3. Never copy `.env` or credentials from the old Telegram ZIP. Confirm the DB
-   password, Sentry token, and app JWT signing key were rotated by the operator;
-   do not print their values.
-4. Apply `0001-tenderhub-mcp-v1.patch` with `git am --3way`. Resolve no conflict
-   by blindly choosing ours/theirs. Preserve all newer TenderHUB subsystems.
-5. Run `scripts/mcp/preflight.*`, Go vet/tests/build, npm ci/lint/typecheck/build.
-   Stop on any failure.
-6. Review the additive SQL migration and apply it only to staging after a DB
-   snapshot. Run `scripts/mcp/verify_migration.sql`.
-7. Configure MCP from `deploy/mcp.env.example` with write flags false. Install
-   the nginx snippet, run `nginx -t`, then deploy staging.
-8. Execute the unauthenticated and authenticated smoke tests, OAuth revoke test,
-   read-only evaluations, and pricing UAT in `VERIFY.md`.
-9. Enable draft writes only after read-only gates pass. Enable template writes
-   only after the role-gate UAT passes.
-10. Do not deploy production while any gate is red or secret rotation is
-    unconfirmed. Return a factual report with commit, commands, timestamps,
-    migration checksum, pass/fail table, and remaining blockers.
+Keep `MCP_WRITE_ENABLED=false` until staging passes. Then enable it only for
+the pilot, leave template writes disabled, and reauthorize the MCP client with
+`pricing:write`. Use imported non-production tenders. Confirm that a direct
+source-backed write creates audit/provenance, recalculates linked materials, bumps the
+financial-input revision once, and survives a response retry without another
+write. Verify stale revision/ETag and a declined confirmation leave all data
+unchanged. Read the changed row and QA report back in TenderHUB VOR.
 
+Do not deploy production while migration, exact source/rate, rollback, and
+two-engineer UAT gates remain unverified. Report commit SHA, migration
+checksum, commands, timestamps, and remaining blockers.
+
+Confirm that the draft page, menu, permissions and REST/MCP lifecycle are gone.
+Test work with two linked materials: manual material quantity is rejected,
+conversion changes are accepted, stored consumption is preserved, and changing
+the work quantity recalculates all children and position totals atomically.
+Deploy backend and frontend together; old write scopes require new OAuth consent.

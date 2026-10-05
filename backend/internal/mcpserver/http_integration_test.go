@@ -55,9 +55,30 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	libraryRepo := repository.NewLibraryRepo(pool)
 	pricingRepo := repository.NewPricingRepo(pool)
 	clientID := "mcp-http-evaluation"
-	scopes := []string{mcpauth.ScopeTendersRead, mcpauth.ScopeArchiveRead, mcpauth.ScopeLibraryRead, mcpauth.ScopePricingDraft, mcpauth.ScopePricingApply}
+	scopes := []string{mcpauth.ScopeTendersRead, mcpauth.ScopeArchiveRead, mcpauth.ScopeLibraryRead, mcpauth.ScopePricingWrite}
 	seedHTTPActor(t, ctx, pool, clientID, scopes)
 	defer cleanupHTTPActor(ctx, pool, clientID)
+	const directTender = "eeeeeeee-3000-0000-0000-000000000010"
+	const directPosition = "eeeeeeee-4000-0000-0000-000000000010"
+	if _, err := pool.Exec(ctx, `INSERT INTO public.tenders
+		(id,title,client_name,tender_number,version,is_archived,usd_rate,eur_rate,created_at,updated_at)
+		VALUES ($1,'MCP HTTP direct test','Eval','EVAL-HTTP-DIRECT',1,false,90,100,now(),now())
+		ON CONFLICT (id) DO NOTHING`, directTender); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO public.client_positions
+		(id,tender_id,position_number,unit_code,volume,work_name,hierarchy_level)
+		VALUES ($1,$2,1,'шт',2,'Мобильный пресс-компактор',0)
+		ON CONFLICT (id) DO NOTHING`, directPosition, directTender); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, httpEvalUser)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items WHERE tender_id=$1`, directTender)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items_audit WHERE changed_by=$1`, httpEvalUser)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.client_positions WHERE id=$1`, directPosition)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.tenders WHERE id=$1`, directTender)
+	}()
 	token, err := issuer.IssueDelegatedAccessToken(httpEvalUser, "mcp-http@example.com", "engineer", joinScopes(scopes), clientID)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +91,13 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	server := httptest.NewServer(middleware.JWTAuthWithChallenge(verify, "https://issuer.test/.well-known/oauth-protected-resource")(oauthHandler.RequireActiveGrant(mcpHandler)))
 	defer server.Close()
 	httpClient := &http.Client{Transport: bearerTransport{token: token.Token, base: http.DefaultTransport}}
-	client := mcp.NewClient(&mcp.Implementation{Name: "integration-client", Version: "1.0.0"}, nil)
+	confirmations := 0
+	client := mcp.NewClient(&mcp.Implementation{Name: "integration-client", Version: "1.0.0"}, &mcp.ClientOptions{
+		ElicitationHandler: func(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+			confirmations++
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true}}, nil
+		},
+	})
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +107,7 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 18 {
+	if len(listed.Tools) != 15 {
 		t.Fatalf("tool count=%d", len(listed.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "tenderhub_search_archive_prices", Arguments: map[string]any{"query": "Мобильный пресс-компактор", "kind": "material", "unit_code": "шт", "limit": 5}})
@@ -89,6 +116,42 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("tool error: %+v", result.Content)
+	}
+	directArgs := map[string]any{
+		"tender_id": directTender, "target_position_id": directPosition,
+		"source_kind": "archive", "source_id": "eeeeeeee-5000-0000-0000-000000000001",
+		"expected_source_rate": 2070000, "quantity": 2,
+		"detail_cost_category_id": "eeeeeeee-0000-0000-0000-000000000002",
+		"expected_revision":       0, "request_key": "http-direct-price-create-001",
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		written, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "tenderhub_price_boq_item", Arguments: directArgs})
+		if err != nil || written.IsError {
+			t.Fatalf("direct write attempt %d: result=%+v err=%v", attempt, written, err)
+		}
+	}
+	if confirmations != 2 {
+		t.Fatalf("confirmations=%d, want 2", confirmations)
+	}
+	var count, revision, receipts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.boq_items WHERE tender_id=$1`, directTender).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT financial_input_revision FROM public.tenders WHERE id=$1`, directTender).Scan(&revision); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, httpEvalUser).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || revision != 1 || receipts != 1 {
+		t.Fatalf("direct HTTP write/retry: items=%d revision=%d receipts=%d", count, revision, receipts)
+	}
+	receipt, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "tenderhub_get_direct_pricing_receipt",
+		Arguments: map[string]any{"request_key": "http-direct-price-create-001"},
+	})
+	if err != nil || receipt.IsError {
+		t.Fatalf("read committed receipt: result=%+v err=%v", receipt, err)
 	}
 	if err := oauthRepo.RevokeGrant(ctx, httpEvalUser, clientID); err != nil {
 		t.Fatal(err)

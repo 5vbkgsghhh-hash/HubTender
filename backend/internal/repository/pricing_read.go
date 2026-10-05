@@ -47,11 +47,12 @@ func (r *PricingRepo) GetPricingState(ctx context.Context, tenderID string, limi
 	err := r.pool.QueryRow(ctx, `
 		SELECT id::text,tender_number,title,client_name,version,is_archived,
 		       housing_class::text,construction_scope::text,submission_deadline,
-		       COALESCE(updated_at,created_at,now())
+		       COALESCE(updated_at,created_at,now()),COALESCE(financial_input_revision,0)
 		FROM public.tenders WHERE id=$1`, tenderID).Scan(
 		&state.Tender.ID, &state.Tender.TenderNumber, &state.Tender.Title, &state.Tender.ClientName,
 		&state.Tender.Version, &state.Tender.IsArchived, &state.Tender.HousingClass,
 		&state.Tender.ConstructionScope, &state.Tender.SubmissionDeadline, &state.Tender.UpdatedAt,
+		&state.FinancialInputRevision,
 	)
 	if err != nil {
 		return nil, err
@@ -401,11 +402,11 @@ func (r *PricingRepo) GetPricingQA(ctx context.Context, tenderID string) (*prici
 	}
 	rows.Close()
 	if err := r.pool.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE pdo.match_level='review'),
+		SELECT count(*) FILTER (WHERE COALESCE(pdo.match_level,bps.direct_match_level)='review'),
 		       count(*) FILTER (WHERE (bps.source_date IS NOT NULL AND bps.source_date < now()-interval '180 days'))
 		FROM public.boq_item_pricing_sources bps
 		JOIN public.boq_items bi ON bi.id=bps.boq_item_id
-		JOIN public.pricing_draft_operations pdo ON pdo.id=bps.draft_operation_id
+		LEFT JOIN public.pricing_draft_operations pdo ON pdo.id=bps.draft_operation_id
 		WHERE bi.tender_id=$1`, tenderID).Scan(&report.WeakSourceCount, &report.StaleSourceCount); err != nil {
 		return nil, err
 	}

@@ -11,11 +11,23 @@
 - Tool handlers also enforce OAuth scope, portal page access, and role.
 - Shared library/template writes are server-gated to `veduschiy_inzhener`,
   `administrator`, and `developer`; UI visibility is not trusted.
-- Pricing apply requires a current validation hash plus explicit MCP elicitation
-  confirmation. It runs in one serializable transaction and uses the canonical
-  Go calculation kernel.
+- Direct pricing requires `pricing:write`, the `MCP_WRITE_ENABLED` gate, a
+  current financial-input revision, and (for updates) the item's ETag. The MCP
+  tool elicits explicit confirmation before the transaction, including all linked children. The
+  canonical Go calculation kernel computes the total.
+- One actor/request key has one committed-command receipt. Repeating identical
+  inputs returns that receipt; reusing the key for different inputs is rejected.
+  Audit and source provenance commit with the BOQ item.
 - Logs contain user/client/tool/status/duration only, never bearer tokens,
   arguments, full payloads, quote documents, or secrets.
 - The handoff ZIP must not contain `.env`, credentials, database exports,
   customer BOQ data, OAuth tokens, or private keys.
 
+- Linked quantity protection is enforced by the service **and** commit boundary.
+  Quantity is derived from the locked parent; consumption is copied only for
+  creation and then preserved. MCP accepts only conversion edits for linked
+  materials. The MCP schema rejects unknown consumption/base/unlink fields.
+- Source rates are rechecked under a row lock in the commit transaction.
+  The command result includes actual quantity and all recalculated children.
+- Retired draft/apply scopes are no longer accepted for new authorization.
+  Existing tokens never acquire `pricing:write` implicitly; reconnect explicitly.

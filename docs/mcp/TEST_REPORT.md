@@ -1,65 +1,71 @@
-# Local verification report
+# MCP v2 direct VOR verification
 
-Date: 2026-09-22 (Asia/Yekaterinburg)  
-Authoritative base: `baldmaxim/HubTender@6cbfa9bcd6ca491f7daaa94347d88d2b7236f31f`
+Date: 2026-10-05, Europe/Moscow. Base: `baldmaxim/HubTender@0611f20bcfc9f842263323208ffa715bd98f8387`.
+All write tests used a disposable local PostgreSQL 17 instance, not production.
 
 ## Passed
 
-- Clean-repository preflight: PASS.
-- Go formatting, vet, focused unit tests, MCP 18-tool schema/annotation contract: PASS.
-- Frontend ESLint (`--max-warnings 0`), TypeScript and production Vite/PWA build: PASS.
-- Production dependency audit (`npm audit --omit=dev`): 0 vulnerabilities after the non-breaking lockfile update.
-- PostgreSQL 17 disposable integration environment:
-  - full Yandex baseline schema: PASS;
-  - every existing incremental migration through 2026-09: PASS;
-  - MCP migration: PASS;
-  - MCP migration second/idempotent application: PASS;
-  - migration verification: `MCP_MIGRATION_OK`, 3 search indexes;
-  - evaluation fixture apply and cleanup: PASS.
-- Pricing integration: PASS.
-  - exact/analog archive matching and furniture rejection;
-  - original currency + target FX;
-  - missing FX validation blocker;
-  - template expansion with restored work/material parent link;
-  - current TenderHUB financial revision bump;
-  - BOQ audit + append-only provenance;
-  - serializable all-or-nothing rollback on stale second operation;
-  - idempotent repeated apply.
-- OAuth integration: PASS.
-  - PKCE S256, single-use code, audience/client scopes;
-  - rotating refresh token and family revocation on reuse;
-  - immediate grant revocation.
-- Real HTTP BFF E2E on a disposable database: PASS.
-  - public metadata/JWKS;
-  - unauthenticated MCP challenge;
-  - DCR → authorize → portal consent → token;
-  - MCP 2026 `server/discover` and 18 typed tools;
-  - revoked access token rejected immediately.
-- Security scan of new `mcpauth`, `mcpserver`, and `pricing` packages with gosec: 0 issues.
-- SQL parser validation with PostgreSQL AST parser: all migration/fixture/verification files parse.
-- Performance against 100,006 BOQ rows in local PostgreSQL 17:
-  - archive search p95: 17.23 ms (target <= 2 s);
-  - pricing state p95: 82.38 ms (target <= 3 s);
-  - transactional draft apply: 27.36 ms (target <= 30 s).
+- Go unit tests for MCP, services, repository, OAuth, calc, handlers and server.
+- Full `go test -p 1 ./...`: all runnable packages passed. Windows denied the
+  generated `apikey.test.exe` filename; that same package was compiled with
+  `go test -c -o .../mcp-credential-tests.exe ./internal/apikey` and executed: PASS.
+- `go vet ./...`.
+- Backend build: `go build -buildvcs=false ./cmd/server`. Host VCS discovery
+  picks the user-profile repository instead of this linked worktree; disabling
+  stamping addresses that host issue. Use normal build in the final checkout.
+- Frontend TypeScript/Vite/PWA production build; ESLint with zero warnings.
+  Vite retains existing chunk-size/eval/import warnings outside this change.
+- Full Yandex baseline and incremental migrations through October; v1 MCP
+  migration and direct-write migration; repeated direct migration application.
+  Verification returns `MCP_MIGRATION_OK` and `MCP_DIRECT_MIGRATION_OK`.
+- Real PostgreSQL direct-write tests:
+  - source-backed creation/update commits BOQ, audit, provenance and revision;
+  - no draft rows are created;
+  - identical retry returns the original receipt; changed inputs with the same
+    key fail; receipt replay works with the write gate off;
+  - new writes fail with the gate off;
+  - stale revision, source rate and ETag fail;
+  - archive and library linked materials derive quantities from the work and
+    conversion/consumption coefficients; consumption is not applied twice;
+  - explicit linked quantity fails in the service and transaction boundary;
+  - repricing from either source preserves the target's stored consumption;
+  - conversion-only change recalculates the linked material;
+  - work-volume change recalculates two materials and position totals, with
+    one financial revision and an audit for each affected row;
+  - missing FX on one child rolls back work, children, revision and receipt;
+  - rejected operations leave no receipt or draft behind.
+  - material, foreign-tender and missing parents are rejected;
+  - different units require explicit conversion; an explicit conversion derives
+    the quantity using the same parent/consumption formula.
+- Real HTTP MCP SDK round trip: 15 typed tools, confirmation, write/retry,
+  committed receipt output validation, archive search and grant revocation.
+- MCP schema rejects an attempted `consumption_coefficient` input before the
+  handler/confirmation. Retired draft/apply or read scopes do not grant writes.
+- OAuth DCR/PKCE, code/token handling, token reuse and revoked grants.
+- Existing repository integration regression: archive composition, linked
+  quantity scaling, template insertion/rollback, and position totals.
 
-## Known upstream/base findings
+## Commands
 
-- `govulncheck` reports `GO-2026-6452` in pre-existing
-  `github.com/xuri/excelize/v2@v2.11.0`; no fixed upstream version was available.
-  The reachable workbook boundary now recovers the malformed shared-string
-  panic and returns a typed invalid-workbook error, preventing process failure.
-- Full `npm audit` still reports the pre-existing Vite development-server
-  `esbuild` advisory. The available automatic fix is a breaking Vite 8 upgrade;
-  production dependencies audit clean and no dev server is deployed.
-- On this Windows host, `go test ./...` could not execute the automatically
-  named `internal/apikey.test.exe` because endpoint protection denied that
-  filename. The same package was compiled to a neutral filename and all its
-  tests passed. The Linux/CI command remains `go test -p 1 ./...`.
+```powershell
+# TEST_DATABASE_URL must point to a disposable database with the fixture.
+cd backend
+go test -p 1 ./...
+go vet ./...
+go build -buildvcs=false ./cmd/server
+go test -tags=integration ./internal/services ./internal/mcpserver ./internal/mcpauth -run 'DirectPricing|AuthenticatedHTTP|OAuth' -count=1
+go test -tags=integration ./internal/repository -run 'ArchiveComposeIntegration|BoqPositionTotalsIntegration|TemplateInsertIntegration' -count=1
+cd ..
+npm run lint -- --max-warnings 0
+npm run build
+```
 
-## Not claimed locally
+## Deployment verification remaining
 
-No connection was made to the colleague's real TenderHUB server or production
-database. Nginx placement, real OAuth-client compatibility, production data
-quality, backup/restore and load targets must be rerun on that server's staging
-environment using `INSTALL.md` and `VERIFY.md`. Production remains blocked until
-those external gates pass.
+No merge, production migration, restart or deployment was performed here.
+Deploy backend and frontend together after review; apply the additive direct
+migration first. Reconnect with `pricing:write`: old draft scopes cannot write
+directly. Test the engineer client on staging with a work and at least two
+linked materials using `VERIFY.md`, then verify the live portal has no draft
+section and reads back the same quantities/totals as MCP. Historical database
+records remain solely to preserve provenance and audit.

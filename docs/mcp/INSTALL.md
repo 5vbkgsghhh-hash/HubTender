@@ -1,4 +1,4 @@
-# Installation
+# Direct VOR pricing installation
 
 ## Zero gate: rotate exposed secrets
 
@@ -12,31 +12,22 @@ Before enabling MCP, rotate at minimum:
 Do not copy any `.env` from that archive. Use the server's secret store and
 `deploy/mcp.env.example` only as a list of variable names.
 
-## 1. Apply code on the colleague's checkout
+## 1. Review the direct-pricing change
 
-The handoff patch is based on:
+This change starts from the already merged MCP implementation:
 
 ```text
 repository: https://github.com/baldmaxim/HubTender
-base commit: 6cbfa9bcd6ca491f7daaa94347d88d2b7236f31f
+base commit: 0611f20bcfc9f842263323208ffa715bd98f8387
 ```
 
-From a clean checkout:
-
-```bash
-git status --short
-git merge-base --is-ancestor 6cbfa9bcd6ca491f7daaa94347d88d2b7236f31f HEAD
-git am --3way 0001-tenderhub-mcp-v1.patch
-```
-
-Stop on conflicts. Do not accept either side wholesale in `routes.go`,
-`wire.go`, `config.go`, or `App.tsx`; those are integration points.
+Review the branch diff before merging. Historical draft tables remain for audit. The draft UI, REST handlers,
+service/repository lifecycle and MCP draft tools are removed.
 
 ## 2. Build before touching a database
 
 ```bash
 cd backend
-go mod tidy
 go vet ./...
 go test -p 1 ./...
 go build ./cmd/server
@@ -50,16 +41,16 @@ VITE_API_URL=https://staging.example npm run build
 
 ## 3. Apply the additive migration on staging
 
-Take a snapshot/backup first. `pg_trgm` must be enabled by the Yandex cluster;
-the migration intentionally fails if it cannot be enabled.
+Take a snapshot/backup first. The v1 MCP migration must already be installed.
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f db/yandex/incremental/2026_09_tenderhub_mcp_v1.sql
+  -f db/yandex/incremental/2026_10_tenderhub_direct_pricing.sql
 ```
 
-Run the read-only verification queries from `scripts/mcp/verify_migration.sql`.
-Do not run the migration on production until all staging gates pass.
+Run `scripts/mcp/verify_direct_migration.sql` to verify the new table,
+columns and unique direct-request index on staging. Do not
+run this migration on production until direct-write integration UAT passes.
 
 ## 4. Configure staging
 
@@ -92,16 +83,22 @@ Sign in with the engineer's own TenderHUB account and approve scopes. Confirm:
 
 - `tenderhub_whoami` returns the engineer and client-specific scopes;
 - archive/library/template reads work;
-- all draft/apply calls return `503 Pricing writes disabled`.
+- `tenderhub_list_boq_items` and `tenderhub_get_boq_item` read VOR rows;
+- the catalog has no draft tools;
+- `tenderhub_price_boq_item` refuses writes while
+  `MCP_WRITE_ENABLED=false`.
 
-## 6. Draft and write gates
+## 6. Direct-write gate
 
 After read-only acceptance:
 
 1. Set `MCP_WRITE_ENABLED=true`, restart BFF, keep template writes false.
-2. Pilot with two engineers and non-production tenders.
-3. Validate a draft, review it in `/pricing-drafts`, confirm via the agent, and
-   verify BOQ totals/audit/provenance by rereading TenderHUB.
-4. Enable `MCP_TEMPLATE_WRITE_ENABLED=true` only if leading-engineer template
+2. Reauthorize the MCP client with `pricing:write`. The old
+   `pricing:draft` scope does not grant direct-write access.
+3. Pilot with two engineers and non-production tenders. Search a source,
+   inspect the BOQ row/ETag and tender revision, then confirm the single
+   direct write. Re-read VOR, audit, provenance, and QA.
+4. Retry the identical request key and verify no second row/revision bump;
+   test stale revision/ETag and an invalid source rate.
+5. Enable `MCP_TEMPLATE_WRITE_ENABLED=true` only if leading-engineer template
    UAT passes. Ordinary engineers remain blocked server-side.
-

@@ -1,27 +1,58 @@
-# TenderHUB MCP v1
+# TenderHUB MCP: direct pricing in VOR
 
-Remote MCP for archive-grounded direct tender pricing. It is embedded in the
-existing Go BFF and exposes `POST /mcp` over stateless Streamable HTTP.
+The Go BFF exposes stateless Streamable HTTP at `POST /mcp`.
+MCP v2 writes directly to the existing VOR/BOQ. There is no separate draft
+section, draft tool, draft REST endpoint or draft lifecycle in the runtime.
+The old `/pricing-drafts` URL redirects to `/positions`.
 
-## Supported workflow
+## Workflow
 
-1. Read already-created/imported tenders and direct-price completeness.
-2. Search archived BOQ items, the managed work/material library, and templates.
-3. Build a durable pricing draft with source provenance and warnings.
-4. Validate the whole draft with the authoritative `internal/calc` kernel.
-5. Show the diff and require explicit MCP elicitation confirmation.
-6. Apply all operations in one serializable transaction with BOQ audit rows.
-7. Generate a direct-price QA report.
+1. Read an imported tender, its `financial_input_revision`, and target BOQ rows.
+2. Select an archive/library source; inspect units, source date, rate and warnings.
+3. Call `tenderhub_price_boq_item` with a unique `request_key` and current revision.
+   Updates also require the item ETag. Confirm the requested direct change.
+4. Read the changed row, linked materials and QA back. An identical retry
+   returns the committed receipt without applying the command again.
 
-The MCP deliberately does not create/delete tenders, import source BOQ files,
-change markup tactics, write redistribution results, or approve financials.
+| Operation | Inputs |
+| --- | --- |
+| Create work or standalone material | `source_kind=archive/library`, source ID/rate, positive `quantity`; library also needs kind/category |
+| Create linked material | Archive/library source, `parent_work_item_id`; omit `quantity`. Supply `conversion_coefficient` when units differ |
+| Reprice existing item | Archive/library source, target item ID/ETag; binding and consumption are preserved |
+| Change work or standalone volume | `source_kind=current`, target item ID/ETag, `quantity`; omit source ID/rate |
+| Change linked material unit conversion | `source_kind=current`, target item ID/ETag, `conversion_coefficient`; omit `quantity` and source ID/rate |
+
+### Linked quantities
+
+`material.quantity = work.quantity × conversion_coefficient × consumption_coefficient`
+
+Missing coefficients mean 1. All explicit inputs and derived quantities must
+be finite and positive. A linked quantity is server-owned: sending `quantity`
+fails with `LINKED_MATERIAL_QUANTITY_READ_ONLY`. MCP exposes no consumption
+edit, raw base quantity, unlinking or arbitrary-rate input. An existing target
+recipe is preserved when importing a new price; a newly added material uses
+the selected source's consumption. A work change recalculates **all** linked
+materials, amounts and position totals in the same transaction as work, audit
+and the one financial revision bump. A calculation failure rolls back all rows.
+
+Templates remain in the existing VOR UI. MCP can read a template and add its
+selected library works/materials directly, linking materials to the resulting
+work IDs. Each confirmed write returns the next revision; no draft is created.
+
+## Migration and access
+
+Apply `2026_10_tenderhub_direct_pricing.sql` after the v1 MCP migration.
+Historical draft tables are retained solely to preserve existing provenance;
+they are not exposed as an active workflow. Do not delete business/audit data.
+Direct writes require `pricing:write` and `MCP_WRITE_ENABLED=true`; the retired
+`pricing:draft`/`pricing:apply` scopes do not grant direct access. Register or
+reconnect a client with the new scopes. Template editing retains its separate gate.
 
 ## Documents
 
-- [INSTALL.md](INSTALL.md) — staged installation and OAuth connection.
-- [VERIFY.md](VERIFY.md) — acceptance gates and smoke checks.
-- [ROLLBACK.md](ROLLBACK.md) — safe disable/revert sequence.
-- [SECURITY.md](SECURITY.md) — trust boundaries and secret handling.
-- [CODEX_INSTALL_PROMPT.md](CODEX_INSTALL_PROMPT.md) — ready prompt for a colleague's Codex.
-- [MIGRATION_MANIFEST.md](MIGRATION_MANIFEST.md) — database objects and ordering.
-- [TEST_REPORT.md](TEST_REPORT.md) — factual local test evidence and external gates.
+- [INSTALL.md](INSTALL.md) — build, additive migration and reconnect.
+- [VERIFY.md](VERIFY.md) — local and staging acceptance scenarios.
+- [TEST_REPORT.md](TEST_REPORT.md) — evidence from this revision.
+- [ROLLBACK.md](ROLLBACK.md) — disable writes and restore BOQ via VOR audit.
+- [SECURITY.md](SECURITY.md) — scopes, receipts, transaction and source rules.
+- [MIGRATION_MANIFEST.md](MIGRATION_MANIFEST.md) — database object changes.

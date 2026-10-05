@@ -1,5 +1,5 @@
 param(
-  [string]$ExpectedBaseCommit = '6cbfa9bcd6ca491f7daaa94347d88d2b7236f31f',
+  [string]$ExpectedBaseCommit = '0611f20bcfc9f842263323208ffa715bd98f8387',
   [switch]$AllowDirty
 )
 $ErrorActionPreference = 'Stop'

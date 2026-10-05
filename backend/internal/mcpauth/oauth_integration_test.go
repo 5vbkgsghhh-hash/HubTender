@@ -40,14 +40,14 @@ func TestOAuthPKCERotationAndImmediateGrantRevoke(t *testing.T) {
 	issuer, key := testMCPIssuer(t)
 	repo := NewRepository(pool)
 	svc := NewService(repo, repository.NewUserRepo(pool), ServiceConfig{Issuer: issuer, CodeTTL: 5 * time.Minute, DCR: true})
-	client, err := svc.RegisterClient(ctx, "Integration Client", []string{"http://127.0.0.1:43210/callback"}, []string{ScopeTendersRead, ScopePricingDraft, ScopePricingApply}, "native")
+	client, err := svc.RegisterClient(ctx, "Integration Client", []string{"http://127.0.0.1:43210/callback"}, []string{ScopeTendersRead, ScopePricingWrite}, "native")
 	if err != nil {
 		t.Fatal(err)
 	}
 	verifier := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
-	redirect, err := svc.BeginAuthorization(ctx, oauthEvalUser, AuthorizationRequest{ClientID: client.ID, RedirectURI: client.RedirectURIs[0], Scope: ScopeTendersRead + " " + ScopePricingDraft + " " + ScopePricingApply, State: "state-1", CodeChallenge: challenge})
+	redirect, err := svc.BeginAuthorization(ctx, oauthEvalUser, AuthorizationRequest{ClientID: client.ID, RedirectURI: client.RedirectURIs[0], Scope: ScopeTendersRead + " " + ScopePricingWrite, State: "state-1", CodeChallenge: challenge})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestOAuthPKCERotationAndImmediateGrantRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if principal.ClientID != client.ID || !principal.HasScope(ScopePricingApply) {
+	if principal.ClientID != client.ID || !principal.HasScope(ScopePricingWrite) {
 		t.Fatalf("bad principal: %+v", principal)
 	}
 	if !svc.IsPrincipalActive(ctx, oauthEvalUser, client.ID) {

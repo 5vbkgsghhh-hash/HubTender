@@ -57,7 +57,6 @@ const ReviewPack = lazy(() => import('./pages/ReviewPack/ReviewPack'));
 const AdminAiSettings = lazy(() => import('./pages/AdminAiSettings/AdminAiSettings'));
 const AdminApiAccess = lazy(() => import('./pages/AdminApiAccess/AdminApiAccess'));
 const AgentConnections = lazy(() => import('./pages/AgentConnections/AgentConnections'));
-const PricingDrafts = lazy(() => import('./pages/PricingDrafts/PricingDrafts'));
 
 function AppContent() {
   const { theme: currentTheme } = useTheme();
@@ -103,7 +102,7 @@ function AppContent() {
             <Route path="tasks" element={<Tasks />} />
             <Route path="positions" element={<ClientPositions />} />
             <Route path="positions/:positionId/items" element={<PositionItemsRoute />} />
-            <Route path="pricing-drafts" element={<PricingDrafts />} />
+            <Route path="pricing-drafts" element={<Navigate to="/positions" replace />} />
             <Route path="commerce/proposal" element={<Commerce />} />
             <Route path="commerce/redistribution" element={<CostRedistribution />} />
             <Route path="commerce" element={<Navigate to="/commerce/proposal" replace />} />

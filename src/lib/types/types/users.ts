@@ -79,7 +79,6 @@ export const ALL_PAGES = [
   '/library/templates',
   '/positions',
   '/positions/:positionId/items',
-  '/pricing-drafts',
   '/commerce',
   '/commerce/proposal',
   '/commerce/redistribution',
@@ -117,7 +116,6 @@ export const DEFAULT_ROLE_PAGES: Record<UserRole, string[]> = {
     '/tasks',
     '/positions',
     '/positions/:positionId/items',
-    '/pricing-drafts',
     '/commerce',
     '/commerce/proposal',
     '/library',
@@ -135,7 +133,6 @@ export const DEFAULT_ROLE_PAGES: Record<UserRole, string[]> = {
     '/tasks',
     '/positions',
     '/positions/:positionId/items',
-    '/pricing-drafts',
     '/library',
     '/library/templates',
     '/bsm',
@@ -151,7 +148,6 @@ export const PAGE_LABELS: Record<string, string> = {
   '/tender-timeline': 'Хронология расчёта тендеров',
   '/tasks': 'Список задач',
   '/positions': 'Позиции заказчика',
-  '/pricing-drafts': 'Черновики расценки',
   '/commerce/proposal': 'Форма КП',
   '/commerce/redistribution': 'Перераспределение',
   '/library': 'Материалы и работы',
@@ -189,7 +185,7 @@ export const PAGE_LABELS: Record<string, string> = {
 export const PAGES_STRUCTURE = [
   {
     title: null, // Без группы
-    pages: ['/dashboard', '/positions', '/pricing-drafts'],
+    pages: ['/dashboard', '/positions'],
   },
   {
     title: 'Данные по тендерам',
@@ -267,9 +263,6 @@ export const hasPageAccess = (user: AuthUser, pagePath: string): boolean => {
     }
   }
 
-  if (pagePath === '/pricing-drafts' && user.allowed_pages.includes('/positions')) {
-    return true;
-  }
   if (pagePath === '/settings/agents' && user.allowed_pages.includes('/settings')) {
     return true;
   }

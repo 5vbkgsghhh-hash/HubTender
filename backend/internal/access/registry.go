@@ -21,7 +21,6 @@ var AllPages = []string{
 	"/dashboard",
 	"/tenders",
 	"/positions",
-	"/pricing-drafts",
 	"/library",
 	"/library/templates",
 	"/bsm",
