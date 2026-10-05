@@ -1,6 +1,6 @@
 # MCP v2 direct VOR verification
 
-Date: 2026-10-05, Europe/Moscow. Base: `baldmaxim/HubTender@0611f20bcfc9f842263323208ffa715bd98f8387`.
+Date: 2026-10-05, Europe/Moscow. Base: `baldmaxim/HubTender@2b2e8674b90e7d3f522db6f5d608ecc630360ffe`.
 All write tests used a disposable local PostgreSQL 17 instance, not production.
 
 ## Passed

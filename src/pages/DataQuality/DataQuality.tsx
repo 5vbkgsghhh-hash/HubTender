@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Select, Button, Space, Typography, Tag, Collapse, Empty, Spin, Switch, Alert, Popconfirm } from 'antd';
+import { Card, Select, Button, Space, Typography, Tag, Collapse, Empty, Spin, Switch, Alert, Popconfirm, Tabs } from 'antd';
 import { ReloadOutlined, SafetyCertificateOutlined, CheckOutlined, SendOutlined, RobotOutlined } from '@ant-design/icons';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useQualityReport } from './hooks/useQualityReport';
@@ -71,6 +71,157 @@ const DataQuality: React.FC = () => {
   const activeFindings = (report?.findings ?? []).filter((f) => f.verdict === null);
   const aiCounts = countLabels(activeFindings, ai.byFinding);
 
+  // Вкладка «Замечания»: на время перепрогона правил — спиннер.
+  const findingsTab = loading ? (
+    <Card>
+      <Spin tip="Выполняются правила…">
+        <div style={{ minHeight: 80 }} />
+      </Spin>
+    </Card>
+  ) : report ? (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Card size="small">
+        <Space size={12} wrap>
+          <Tag color="red">Ошибки: {counts.error}</Tag>
+          <Tag color="orange">Предупреждения: {counts.warning}</Tag>
+          <Tag color="blue">Информация: {counts.info}</Tag>
+          <Tag color="green">Принято: {counts.accepted}</Tag>
+          {counts.money > 0 && (
+            <Tag color="volcano">
+              Денежный эффект: {Math.round(counts.money).toLocaleString('ru-RU')} ₽
+            </Tag>
+          )}
+        </Space>
+      </Card>
+
+      <CheckpointBar
+        report={report}
+        newCount={counts.new}
+        showOnlyNew={showOnlyNew}
+        onShowOnlyNewChange={setShowOnlyNew}
+        checkpointing={checkpointing}
+        onCheckpoint={() => void markCheckpoint()}
+        isPhone={isPhone}
+      />
+
+      <ProposalReadinessCard
+        findings={report.findings}
+        rules={rules}
+        isPhone={isPhone}
+      />
+
+      <AITriageBar
+        data={ai.data}
+        counts={aiCounts}
+        total={activeFindings.length}
+        starting={ai.starting}
+        hideLikelyOk={hideAIOk}
+        onHideLikelyOkChange={setHideAIOk}
+        onStart={() => void ai.start()}
+        isPhone={isPhone}
+      />
+
+      {report.errors.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Часть правил не отработала"
+          description={report.errors.map((e) => `${e.rule_code}: ${e.message}`).join('; ')}
+        />
+      )}
+
+      {shownGroups.length === 0 ? (
+        <Card>
+          <Empty
+            description={
+              showOnlyNew
+                ? 'Новых находок с последней отметки проверки нет'
+                : showAccepted
+                  ? 'Находок нет'
+                  : 'Активных находок нет — возможно, все отмечены как норма'
+            }
+          />
+        </Card>
+      ) : (
+        <Collapse
+          items={shownGroups.map((g) => ({
+            key: g.ruleCode,
+            label: (
+              <Space size={8} wrap>
+                <Tag color={SEVERITY_META[g.severity].color}>{g.ruleCode}</Tag>
+                <Text strong>{g.ruleTitle}</Text>
+                <Text type="secondary">({g.findings.length})</Text>
+                {g.moneyTotal > 0 && (
+                  <Tag color="volcano">
+                    {Math.round(g.moneyTotal).toLocaleString('ru-RU')} ₽
+                  </Tag>
+                )}
+                {g.acceptedCount > 0 && (
+                  <Tag color="green">принято: {g.acceptedCount}</Tag>
+                )}
+              </Space>
+            ),
+            children: (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Paragraph
+                  type="secondary"
+                  style={{ marginBottom: 0, whiteSpace: 'pre-line', fontSize: 13 }}
+                >
+                  {g.summary}
+                </Paragraph>
+                {(() => {
+                  const pending = g.findings.filter((f) => f.verdict !== 'accepted').length;
+                  if (pending === 0) return null;
+                  return (
+                    <Popconfirm
+                      title="Принять всю группу как норму?"
+                      description={`Будет отмечено находок: ${pending}. Каждую можно переоткрыть по отдельности.`}
+                      okText="Принять"
+                      cancelText="Отмена"
+                      onConfirm={() => void submitGroupVerdict(g.findings, 'accepted')}
+                    >
+                      <Button size="small" icon={<CheckOutlined />}>
+                        Принять всю группу как норму ({pending})
+                      </Button>
+                    </Popconfirm>
+                  );
+                })()}
+                {telegramEnabled && dispatchableIds(g.findings).length > 0 && (
+                  <Button size="small" icon={<SendOutlined />} onClick={() => setDispatchIds(dispatchableIds(g.findings))}>
+                    Отправить группу исполнителям ({dispatchableIds(g.findings).length})
+                  </Button>
+                )}
+                {(() => {
+                  const okByAI = aiOkToAccept(g.findings, ai.byFinding);
+                  if (okByAI.length === 0) return null;
+                  return (
+                    <Popconfirm
+                      title="Принять как норму то, что ИИ считает нормой?"
+                      description={`Будет отмечено находок: ${okByAI.length}. Перед этим просмотрите причины в таблице.`}
+                      okText="Принять"
+                      cancelText="Отмена"
+                      onConfirm={() => void submitGroupVerdict(okByAI, 'accepted')}
+                    >
+                      <Button size="small" icon={<RobotOutlined />}>
+                        Принять «похоже на норму» по ИИ ({okByAI.length})
+                      </Button>
+                    </Popconfirm>
+                  );
+                })()}
+                <FindingsTable
+                  findings={g.findings}
+                  isPhone={isPhone}
+                  onVerdict={submitVerdict}
+                  assessments={ai.byFinding}
+                />
+              </Space>
+            ),
+          }))}
+        />
+      )}
+    </Space>
+  ) : null;
+
   return (
     <div style={{ padding: isPhone ? 12 : 24 }}>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -123,167 +274,37 @@ const DataQuality: React.FC = () => {
 
         {canEditAISettings(user?.role_code) && <AITriageSettingsCard tenders={tenders} />}
 
-        {/* Разделы грузятся отдельно от находок и не пересоздаются, пока идёт
-            перепрогон правил, — иначе панель мигала бы на каждой правке тендера. */}
-        {selectedTenderId && <SectionsPanel tenderId={selectedTenderId} isPhone={isPhone} />}
-        {selectedTenderId && <CostBenchmarkPanel tenderId={selectedTenderId} isPhone={isPhone} />}
-
-        {loading && (
-          <Card>
-            <Spin tip="Выполняются правила…">
-              <div style={{ minHeight: 80 }} />
-            </Spin>
-          </Card>
-        )}
-
-        {!loading && !selectedTenderId && (
+        {selectedTenderId ? (
+          // Разделы и эталоны грузятся отдельно от находок и не пересоздаются, пока
+          // идёт перепрогон правил, — иначе мигали бы на каждой правке тендера.
+          // Вкладка монтируется при первом открытии. На телефоне подписи короткие,
+          // чтобы три вкладки влезали в 360 px.
+          <Tabs
+            defaultActiveKey="sections"
+            items={[
+              {
+                key: 'sections',
+                label: isPhone ? 'Разделы' : 'Готовность по разделам ВОР',
+                children: <SectionsPanel tenderId={selectedTenderId} isPhone={isPhone} />,
+              },
+              {
+                key: 'costs',
+                label: isPhone ? 'Затраты' : 'Сравнение по затратам',
+                children: <CostBenchmarkPanel tenderId={selectedTenderId} isPhone={isPhone} />,
+              },
+              {
+                key: 'findings',
+                label: !loading && report
+                  ? `Замечания (${counts.error + counts.warning + counts.info})`
+                  : 'Замечания',
+                children: findingsTab,
+              },
+            ]}
+          />
+        ) : (
           <Card>
             <Empty description="Выберите тендер, чтобы увидеть находки" />
           </Card>
-        )}
-
-        {!loading && selectedTenderId && report && (
-          <>
-            <Card size="small">
-              <Space size={12} wrap>
-                <Tag color="red">Ошибки: {counts.error}</Tag>
-                <Tag color="orange">Предупреждения: {counts.warning}</Tag>
-                <Tag color="blue">Информация: {counts.info}</Tag>
-                <Tag color="green">Принято: {counts.accepted}</Tag>
-                {counts.money > 0 && (
-                  <Tag color="volcano">
-                    Денежный эффект: {Math.round(counts.money).toLocaleString('ru-RU')} ₽
-                  </Tag>
-                )}
-              </Space>
-            </Card>
-
-            <CheckpointBar
-              report={report}
-              newCount={counts.new}
-              showOnlyNew={showOnlyNew}
-              onShowOnlyNewChange={setShowOnlyNew}
-              checkpointing={checkpointing}
-              onCheckpoint={() => void markCheckpoint()}
-              isPhone={isPhone}
-            />
-
-            <ProposalReadinessCard
-              findings={report.findings}
-              rules={rules}
-              isPhone={isPhone}
-            />
-
-            <AITriageBar
-              data={ai.data}
-              counts={aiCounts}
-              total={activeFindings.length}
-              starting={ai.starting}
-              hideLikelyOk={hideAIOk}
-              onHideLikelyOkChange={setHideAIOk}
-              onStart={() => void ai.start()}
-              isPhone={isPhone}
-            />
-
-            {report.errors.length > 0 && (
-              <Alert
-                type="warning"
-                showIcon
-                message="Часть правил не отработала"
-                description={report.errors.map((e) => `${e.rule_code}: ${e.message}`).join('; ')}
-              />
-            )}
-
-            {shownGroups.length === 0 ? (
-              <Card>
-                <Empty
-                  description={
-                    showOnlyNew
-                      ? 'Новых находок с последней отметки проверки нет'
-                      : showAccepted
-                        ? 'Находок нет'
-                        : 'Активных находок нет — возможно, все отмечены как норма'
-                  }
-                />
-              </Card>
-            ) : (
-              <Collapse
-                items={shownGroups.map((g) => ({
-                  key: g.ruleCode,
-                  label: (
-                    <Space size={8} wrap>
-                      <Tag color={SEVERITY_META[g.severity].color}>{g.ruleCode}</Tag>
-                      <Text strong>{g.ruleTitle}</Text>
-                      <Text type="secondary">({g.findings.length})</Text>
-                      {g.moneyTotal > 0 && (
-                        <Tag color="volcano">
-                          {Math.round(g.moneyTotal).toLocaleString('ru-RU')} ₽
-                        </Tag>
-                      )}
-                      {g.acceptedCount > 0 && (
-                        <Tag color="green">принято: {g.acceptedCount}</Tag>
-                      )}
-                    </Space>
-                  ),
-                  children: (
-                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                      <Paragraph
-                        type="secondary"
-                        style={{ marginBottom: 0, whiteSpace: 'pre-line', fontSize: 13 }}
-                      >
-                        {g.summary}
-                      </Paragraph>
-                      {(() => {
-                        const pending = g.findings.filter((f) => f.verdict !== 'accepted').length;
-                        if (pending === 0) return null;
-                        return (
-                          <Popconfirm
-                            title="Принять всю группу как норму?"
-                            description={`Будет отмечено находок: ${pending}. Каждую можно переоткрыть по отдельности.`}
-                            okText="Принять"
-                            cancelText="Отмена"
-                            onConfirm={() => void submitGroupVerdict(g.findings, 'accepted')}
-                          >
-                            <Button size="small" icon={<CheckOutlined />}>
-                              Принять всю группу как норму ({pending})
-                            </Button>
-                          </Popconfirm>
-                        );
-                      })()}
-                      {telegramEnabled && dispatchableIds(g.findings).length > 0 && (
-                        <Button size="small" icon={<SendOutlined />} onClick={() => setDispatchIds(dispatchableIds(g.findings))}>
-                          Отправить группу исполнителям ({dispatchableIds(g.findings).length})
-                        </Button>
-                      )}
-                      {(() => {
-                        const okByAI = aiOkToAccept(g.findings, ai.byFinding);
-                        if (okByAI.length === 0) return null;
-                        return (
-                          <Popconfirm
-                            title="Принять как норму то, что ИИ считает нормой?"
-                            description={`Будет отмечено находок: ${okByAI.length}. Перед этим просмотрите причины в таблице.`}
-                            okText="Принять"
-                            cancelText="Отмена"
-                            onConfirm={() => void submitGroupVerdict(okByAI, 'accepted')}
-                          >
-                            <Button size="small" icon={<RobotOutlined />}>
-                              Принять «похоже на норму» по ИИ ({okByAI.length})
-                            </Button>
-                          </Popconfirm>
-                        );
-                      })()}
-                      <FindingsTable
-                        findings={g.findings}
-                        isPhone={isPhone}
-                        onVerdict={submitVerdict}
-                        assessments={ai.byFinding}
-                      />
-                    </Space>
-                  ),
-                }))}
-              />
-            )}
-          </>
         )}
       </Space>
       {selectedTenderId && dispatchIds && (

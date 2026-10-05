@@ -18,7 +18,7 @@ This change starts from the already merged MCP implementation:
 
 ```text
 repository: https://github.com/baldmaxim/HubTender
-base commit: 0611f20bcfc9f842263323208ffa715bd98f8387
+base commit: 2b2e8674b90e7d3f522db6f5d608ecc630360ffe
 ```
 
 Review the branch diff before merging. Historical draft tables remain for audit. The draft UI, REST handlers,

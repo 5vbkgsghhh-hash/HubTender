@@ -6,6 +6,7 @@ import type {
   BenchmarkStatus,
   CostBenchmarkRow,
 } from '../api/costBenchmarks';
+import { VIS_SUPER_GROUP_NAME, isVisCategory } from '../../utils/costGroups';
 
 /** Роли, которым сервер разрешает править справочник (BenchmarkRangeEditorRoles). */
 export const BENCHMARK_EDITOR_ROLES = [
@@ -70,15 +71,81 @@ export function isDeviation(a: BenchmarkAssessment | null): boolean {
 
 export interface CostBenchmarkTreeRow extends CostBenchmarkRow {
   key: string;
+  /** Над-группа ВИС: собирается на фронте, своего эталона у неё нет. */
+  isGroup?: boolean;
   children?: CostBenchmarkTreeRow[];
 }
 
+/** Площадь и готовность расчёта — для ₽/м² над-группы, которую сервер не считает. */
+export interface BenchmarkTreeContext {
+  areaSp: number | null;
+  calculationReady: boolean;
+}
+
+/** ₽/м² по СП над-группы. Статусы в том же порядке, что у сервера (costbenchmark.assess). */
+function groupAreaAssessment(total: number, ctx: BenchmarkTreeContext): BenchmarkAssessment {
+  const value =
+    ctx.areaSp !== null && ctx.areaSp > 0 && total > 0
+      ? Math.round((total / ctx.areaSp) * 100) / 100
+      : null;
+  let status: BenchmarkStatus = 'NO_REFERENCE';
+  if (!ctx.calculationReady) status = 'CALCULATION_NOT_READY';
+  else if (value === null) status = 'NO_VALUE';
+  return {
+    value,
+    status,
+    reference: null,
+    deviation_percent: null,
+    history_conflict: false,
+    history_median: null,
+    history_tenders: 0,
+  };
+}
+
 /**
- * Дерево для таблицы: итог, категории, под категорией — её детализации.
- * onlyDeviations оставляет строки с отклонением и категории, у которых отклонение
- * есть хотя бы у одной детализации.
+ * Над-группа «ВНУТРЕННИЕ ИНЖЕНЕРНЫЕ СИСТЕМЫ», как на «Затратах на строительство»:
+ * ВИС-категории уходят под одну строку на месте первой из них. Сумма группы — по
+ * всем ВИС-категориям тендера, а не по оставшимся в режиме отклонений, чтобы
+ * она не менялась от переключателя.
  */
-export function buildBenchmarkTree(rows: CostBenchmarkRow[], onlyDeviations: boolean): CostBenchmarkTreeRow[] {
+function groupVisCategories(
+  nodes: CostBenchmarkTreeRow[],
+  visTotal: number,
+  ctx: BenchmarkTreeContext,
+): CostBenchmarkTreeRow[] {
+  const isVis = (n: CostBenchmarkTreeRow) => n.level === 'category' && isVisCategory(n.name);
+  const first = nodes.findIndex(isVis);
+  if (first < 0) return nodes;
+  const group: CostBenchmarkTreeRow = {
+    key: 'group:vis',
+    isGroup: true,
+    level: 'category',
+    category_id: '',
+    detail_id: '',
+    name: VIS_SUPER_GROUP_NAME,
+    location: '',
+    unit: '',
+    volume: null,
+    commercial_total: visTotal,
+    per_volume_unit: null,
+    per_area_sp: groupAreaAssessment(visTotal, ctx),
+    children: nodes.filter(isVis),
+  };
+  const rest = nodes.filter((n) => !isVis(n));
+  rest.splice(first, 0, group);
+  return rest;
+}
+
+/**
+ * Дерево для таблицы: итог, категории, под категорией — её детализации;
+ * ВИС-категории — под общей над-группой. onlyDeviations оставляет строки с
+ * отклонением и категории, у которых отклонение есть хотя бы у одной детализации.
+ */
+export function buildBenchmarkTree(
+  rows: CostBenchmarkRow[],
+  onlyDeviations: boolean,
+  ctx: BenchmarkTreeContext = { areaSp: null, calculationReady: true },
+): CostBenchmarkTreeRow[] {
   const out: CostBenchmarkTreeRow[] = [];
   const byCategory = new Map<string, CostBenchmarkTreeRow>();
   const dev = (r: CostBenchmarkRow) => isDeviation(r.per_area_sp) || isDeviation(r.per_volume_unit);
@@ -97,5 +164,9 @@ export function buildBenchmarkTree(rows: CostBenchmarkRow[], onlyDeviations: boo
     if (parent) (parent.children ??= []).push(node);
     else out.push(node);
   }
-  return onlyDeviations ? out.filter((n) => dev(n) || (n.children?.length ?? 0) > 0) : out;
+  const kept = onlyDeviations ? out.filter((n) => dev(n) || (n.children?.length ?? 0) > 0) : out;
+  const visTotal = rows
+    .filter((r) => r.level === 'category' && isVisCategory(r.name))
+    .reduce((sum, r) => sum + r.commercial_total, 0);
+  return groupVisCategories(kept, visTotal, ctx);
 }
