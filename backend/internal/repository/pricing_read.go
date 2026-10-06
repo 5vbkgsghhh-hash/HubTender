@@ -175,6 +175,7 @@ func (r *PricingRepo) RawArchiveCandidates(ctx context.Context, in pricing.Archi
 		); err != nil {
 			return nil, err
 		}
+		c.SourceVersion = pricing.ArchiveSourceVersion(c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -212,6 +213,7 @@ func (r *PricingRepo) SearchLibrary(ctx context.Context, query, kind, unit strin
 			&c.ConsumptionCoefficient, &c.Confidence, &total); err != nil {
 			return nil, 0, err
 		}
+		c.SourceVersion = pricing.LibrarySourceVersion(c)
 		out = append(out, c)
 	}
 	return out, total, rows.Err()
@@ -299,7 +301,11 @@ func (r *PricingRepo) GetArchiveItem(ctx context.Context, id string) (*pricing.A
 }
 
 func (r *PricingRepo) RawArchiveCandidatesByID(ctx context.Context, id string) ([]pricing.ArchiveCandidate, error) {
-	rows, err := r.pool.Query(ctx, `
+	return rawArchiveCandidatesByID(ctx, r.pool, id)
+}
+
+func rawArchiveCandidatesByID(ctx context.Context, db pricingReadDB, id string) ([]pricing.ArchiveCandidate, error) {
+	rows, err := db.Query(ctx, `
 		SELECT bi.id::text,t.id::text,t.title,t.tender_number,t.version,t.is_archived,
 		       COALESCE(bi.quote_price_date::timestamptz,t.updated_at,t.created_at,now()),t.housing_class::text,t.construction_scope::text,
 		       cp.id::text,cp.work_name,COALESCE(wn.name,mn.name,bi.description,''),
@@ -332,26 +338,38 @@ func (r *PricingRepo) RawArchiveCandidatesByID(ctx context.Context, id string) (
 			&c.HistoricalRUBUnitRate, &c.RawSimilarity); err != nil {
 			return nil, err
 		}
+		c.SourceVersion = pricing.ArchiveSourceVersion(c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
 func (r *PricingRepo) GetLibraryItem(ctx context.Context, id, kind string) (*pricing.LibraryCandidate, error) {
+	return getLibraryPricingItem(ctx, r.pool, id, kind, false)
+}
+
+func getLibraryPricingItem(ctx context.Context, db pricingReadDB, id, kind string, lock bool) (*pricing.LibraryCandidate, error) {
+	workLock, materialLock := "", ""
+	if lock {
+		workLock = " FOR SHARE OF wl,wn NOWAIT"
+		materialLock = " FOR SHARE OF ml,mn NOWAIT"
+	}
 	var c pricing.LibraryCandidate
 	if kind == "work" {
-		err := r.pool.QueryRow(ctx, `SELECT wl.id::text,'work',wn.name,wn.id::text,wn.unit,wl.item_type::text,NULL::text,wl.unit_rate,wl.currency_type::text,NULL::text,NULL::numeric,NULL::numeric,1::float8
-			FROM public.works_library wl JOIN public.work_names wn ON wn.id=wl.work_name_id WHERE wl.id=$1`, id).Scan(
+		err := db.QueryRow(ctx, `SELECT wl.id::text,'work',wn.name,wn.id::text,wn.unit,wl.item_type::text,NULL::text,wl.unit_rate,wl.currency_type::text,NULL::text,NULL::numeric,NULL::numeric,1::float8
+			FROM public.works_library wl JOIN public.work_names wn ON wn.id=wl.work_name_id WHERE wl.id=$1`+workLock, id).Scan(
 			&c.ID, &c.Kind, &c.Name, &c.NameID, &c.UnitCode, &c.ItemType, &c.MaterialType,
 			&c.UnitRate, &c.CurrencyType, &c.DeliveryPriceType, &c.DeliveryAmount,
 			&c.ConsumptionCoefficient, &c.Confidence)
+		c.SourceVersion = pricing.LibrarySourceVersion(c)
 		return &c, err
 	}
-	err := r.pool.QueryRow(ctx, `SELECT ml.id::text,'material',mn.name,mn.id::text,mn.unit,ml.item_type::text,ml.material_type::text,ml.unit_rate,ml.currency_type::text,ml.delivery_price_type::text,ml.delivery_amount,ml.consumption_coefficient,1::float8
-		FROM public.materials_library ml JOIN public.material_names mn ON mn.id=ml.material_name_id WHERE ml.id=$1`, id).Scan(
+	err := db.QueryRow(ctx, `SELECT ml.id::text,'material',mn.name,mn.id::text,mn.unit,ml.item_type::text,ml.material_type::text,ml.unit_rate,ml.currency_type::text,ml.delivery_price_type::text,ml.delivery_amount,ml.consumption_coefficient,1::float8
+		FROM public.materials_library ml JOIN public.material_names mn ON mn.id=ml.material_name_id WHERE ml.id=$1`+materialLock, id).Scan(
 		&c.ID, &c.Kind, &c.Name, &c.NameID, &c.UnitCode, &c.ItemType, &c.MaterialType,
 		&c.UnitRate, &c.CurrencyType, &c.DeliveryPriceType, &c.DeliveryAmount,
 		&c.ConsumptionCoefficient, &c.Confidence)
+	c.SourceVersion = pricing.LibrarySourceVersion(c)
 	return &c, err
 }
 

@@ -51,8 +51,9 @@ func TestDirectPricingCommitsWithoutDraftAndReplaysSafely(t *testing.T) {
 		TenderID: targetTender, TargetPositionID: targetPosition,
 		SourceKind: "archive", SourceID: sourceMaterial,
 		ExpectedSourceRate: *source.UnitRate, Quantity: &quantity,
-		ExpectedRevision: state.FinancialInputRevision,
-		RequestKey:       "integration-direct-create-001", Confirm: true,
+		ExpectedSourceVersion: source.SourceVersion,
+		ExpectedRevision:      state.FinancialInputRevision,
+		RequestKey:            "integration-direct-create-001", Confirm: true,
 	}
 	created, err := svc.ApplyDirectPrice(ctx, principal, in)
 	if err != nil {

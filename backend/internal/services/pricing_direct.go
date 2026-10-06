@@ -16,18 +16,22 @@ import (
 	"github.com/su10/hubtender/backend/internal/repository"
 )
 
+var sourceVersionPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
 var directRequestKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,80}$`)
 
 // DirectPricingInput commits exactly one source-backed BOQ item to the VOR.
-// Updates preserve the item's name, category, quantity and parent link.
+// Updates preserve name, category and binding. Explicit quantity/conversion
+// edits are limited by whether the row is a linked material.
 type DirectPricingInput struct {
+	ExpectedSourceVersion string   `json:"expected_source_version,omitempty"`
 	ConversionCoefficient *float64 `json:"conversion_coefficient,omitempty"`
 	TenderID              string   `json:"tender_id"`
 	TargetPositionID      string   `json:"target_position_id"`
 	TargetItemID          *string  `json:"target_item_id,omitempty"`
 	ParentWorkItemID      *string  `json:"parent_work_item_id,omitempty"`
 	DetailCostCategoryID  *string  `json:"detail_cost_category_id,omitempty"`
-	SourceKind            string   `json:"source_kind"` // archive | library
+	SourceKind            string   `json:"source_kind"` // archive | library | current
 	SourceID              string   `json:"source_id"`
 	ExpectedSourceRate    float64  `json:"expected_source_rate"`
 	LibraryKind           string   `json:"library_kind,omitempty"` // work | material
@@ -89,8 +93,8 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 	if !in.Confirm || in.TenderID == "" || in.TargetPositionID == "" || !directRequestKeyPattern.MatchString(in.RequestKey) || in.ExpectedRevision < 0 {
 		return nil, fmt.Errorf("%w: confirm, IDs, request_key and expected_revision are required", ErrInvalidPricingInput)
 	}
-	if in.SourceKind != "current" && (in.SourceID == "" || !positiveFinite(in.ExpectedSourceRate)) {
-		return nil, fmt.Errorf("%w: source_id and positive expected_source_rate are required", ErrInvalidPricingInput)
+	if in.SourceKind != "current" && (in.SourceID == "" || !positiveFinite(in.ExpectedSourceRate) || !sourceVersionPattern.MatchString(in.ExpectedSourceVersion)) {
+		return nil, fmt.Errorf("%w: source_id, positive expected_source_rate and expected_source_version from the selected search result are required", ErrInvalidPricingInput)
 	}
 	if (in.Quantity != nil && !positiveFinite(*in.Quantity)) || (in.ConversionCoefficient != nil && !positiveFinite(*in.ConversionCoefficient)) {
 		return nil, fmt.Errorf("%w: quantity and conversion_coefficient must be finite and positive", ErrInvalidPricingInput)
@@ -116,6 +120,7 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 			return nil, repository.ErrDirectRequestKeyReused
 		}
 		prior.Replayed = true
+		s.afterDirectPricingCommit(in.TenderID)
 		return prior, nil
 	}
 	if !s.features.WriteEnabled {
@@ -174,8 +179,8 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 	case "library":
 		err = s.buildDirectLibrary(ctx, in, position, target, &op)
 	case "current":
-		if target == nil || (in.Quantity == nil && in.ConversionCoefficient == nil) || in.SourceID != "" || in.ExpectedSourceRate != 0 || in.LibraryKind != "" {
-			return nil, fmt.Errorf("%w: current updates only quantity or conversion_coefficient on an existing row; omit source_id, expected_source_rate and library_kind", ErrInvalidPricingInput)
+		if target == nil || (in.Quantity == nil && in.ConversionCoefficient == nil) || in.SourceID != "" || in.ExpectedSourceRate != 0 || in.LibraryKind != "" || in.ExpectedSourceVersion != "" {
+			return nil, fmt.Errorf("%w: current updates only quantity or conversion_coefficient on an existing row; omit source_id, expected_source_rate, expected_source_version and library_kind", ErrInvalidPricingInput)
 		}
 		op.ProposedPayload = proposedFromExisting(target)
 		op.MatchLevel, op.Confidence = "manual", 1
@@ -238,17 +243,21 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 	if err != nil {
 		return nil, err
 	}
-	if !result.Replayed {
-		if s.cache != nil {
-			s.cache.Delete("tender:overview:" + in.TenderID)
-			s.cache.Delete("positions:with_costs:" + in.TenderID)
-			s.cache.DeleteByPrefix(tenderListKeyPrefix)
-		}
-		if s.recalcQueue != nil {
-			s.recalcQueue.Enqueue(in.TenderID)
-		}
-	}
+	s.afterDirectPricingCommit(in.TenderID)
 	return result, nil
+}
+
+// A recovered receipt also repairs a process crash after DB commit but before
+// cache invalidation/background enqueue. Both side effects are idempotent.
+func (s *PricingService) afterDirectPricingCommit(tenderID string) {
+	if s.cache != nil {
+		s.cache.Delete("tender:overview:" + tenderID)
+		s.cache.Delete("positions:with_costs:" + tenderID)
+		s.cache.DeleteByPrefix(tenderListKeyPrefix)
+	}
+	if s.recalcQueue != nil {
+		s.recalcQueue.Enqueue(tenderID)
+	}
 }
 
 func positiveFinite(v float64) bool { return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -261,8 +270,8 @@ func (s *PricingService) buildDirectArchive(ctx context.Context, in DirectPricin
 	if source == nil {
 		return fmt.Errorf("%w: archive item not found", ErrInvalidPricingInput)
 	}
-	if source.UnitRate == nil || math.Abs(*source.UnitRate-in.ExpectedSourceRate) > 0.000001 {
-		return fmt.Errorf("%w: archive source rate changed; search again", repository.ErrDirectPricingStale)
+	if source.SourceVersion != in.ExpectedSourceVersion || source.UnitRate == nil || math.Abs(*source.UnitRate-in.ExpectedSourceRate) > 0.000001 {
+		return fmt.Errorf("%w: archive source snapshot changed; search again", repository.ErrDirectPricingStale)
 	}
 	if target != nil && (!samePricingFamily(target.BoqItemType, source.ItemKind) || !sameUnit(target.UnitCode, source.UnitCode)) {
 		return fmt.Errorf("%w: source family or unit differs from the target BOQ item", ErrInvalidPricingInput)
@@ -298,15 +307,7 @@ func (s *PricingService) buildDirectArchive(ctx context.Context, in DirectPricin
 		if p.DetailCostCategoryID == nil {
 			p.DetailCostCategoryID = source.DetailCostCategoryID
 		}
-		if source.QuoteLink != nil {
-			p.QuoteLink = source.QuoteLink
-		}
-		if source.QuotePriceDate != nil {
-			p.QuotePriceDate = source.QuotePriceDate
-		}
-		if source.QuoteValidUntil != nil {
-			p.QuoteValidUntil = source.QuoteValidUntil
-		}
+		p.QuoteLink, p.QuotePriceDate, p.QuoteValidUntil = source.QuoteLink, source.QuotePriceDate, source.QuoteValidUntil
 		op.ProposedPayload = p
 	} else {
 		sortNum := op.PositionOrder
@@ -337,7 +338,7 @@ func (s *PricingService) buildDirectArchive(ctx context.Context, in DirectPricin
 	if source.TenderID == in.TenderID {
 		op.Warnings = append(op.Warnings, "Источник находится в том же тендере")
 	}
-	op.SourceRef = pricing.SourceRef{TenderID: &source.TenderID, ItemID: &source.ItemID,
+	op.SourceRef = pricing.SourceRef{Version: source.SourceVersion, TenderID: &source.TenderID, ItemID: &source.ItemID,
 		Rate: source.UnitRate, Currency: source.CurrencyType, Date: &source.TenderDate}
 	if op.MatchLevel == "" {
 		op.MatchLevel, op.Confidence = "manual", 1
@@ -358,8 +359,8 @@ func (s *PricingService) buildDirectLibrary(ctx context.Context, in DirectPricin
 		return fmt.Errorf("%w: library item not found", ErrInvalidPricingInput)
 	}
 	unit, currency, rate := item.UnitCode, item.CurrencyType, item.UnitRate
-	if math.Abs(rate-in.ExpectedSourceRate) > 0.000001 {
-		return fmt.Errorf("%w: library source rate changed; search again", repository.ErrDirectPricingStale)
+	if item.SourceVersion != in.ExpectedSourceVersion || math.Abs(rate-in.ExpectedSourceRate) > 0.000001 {
+		return fmt.Errorf("%w: library source snapshot changed; search again", repository.ErrDirectPricingStale)
 	}
 	if target != nil && (!samePricingFamily(target.BoqItemType, item.Kind) || !sameUnit(target.UnitCode, &unit)) {
 		return fmt.Errorf("%w: library family or unit differs from the target BOQ item", ErrInvalidPricingInput)
@@ -371,6 +372,7 @@ func (s *PricingService) buildDirectLibrary(ctx context.Context, in DirectPricin
 		p := proposedFromExisting(target)
 		p.UnitRate, p.CurrencyType = &rate, &currency
 		p.DeliveryPriceType, p.DeliveryAmount = item.DeliveryPriceType, item.DeliveryAmount
+		p.QuoteLink, p.QuotePriceDate, p.QuoteValidUntil = nil, nil, nil
 		op.ProposedPayload = p
 	} else {
 		sortNum := op.PositionOrder
@@ -393,7 +395,7 @@ func (s *PricingService) buildDirectLibrary(ctx context.Context, in DirectPricin
 		}
 		op.ProposedPayload = p
 	}
-	op.SourceRef = pricing.SourceRef{LibraryID: &item.ID, Rate: &rate, Currency: &currency}
+	op.SourceRef = pricing.SourceRef{Version: item.SourceVersion, LibraryID: &item.ID, Rate: &rate, Currency: &currency}
 	op.MatchLevel, op.Confidence = "manual", 1
 	op.Rationale = stringPtr(defaultText(in.Rationale, "Прямая расценка ВОР из библиотеки TenderHUB"))
 	return nil

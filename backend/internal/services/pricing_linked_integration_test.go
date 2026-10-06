@@ -36,6 +36,7 @@ func TestDirectPricingLinkedMaterialsAreDerivedAndAtomic(t *testing.T) {
 	libraryMat := "eeeeeeee-6000-0000-0000-000000000002"
 	apply := func(in DirectPricingInput) *pricing.DirectPricingResult {
 		t.Helper()
+		captureReviewSource(t, ctx, svc, &in)
 		out, err := svc.ApplyDirectPrice(ctx, p, in)
 		if err != nil {
 			t.Fatal(err)
@@ -54,6 +55,7 @@ func TestDirectPricingLinkedMaterialsAreDerivedAndAtomic(t *testing.T) {
 	defer pool.Exec(ctx, `UPDATE public.boq_items SET consumption_coefficient=1 WHERE id=$1`, sourceMaterial)
 	defer pool.Exec(ctx, `UPDATE public.materials_library SET consumption_coefficient=1 WHERE id=$1`, libraryMat)
 	newMat := DirectPricingInput{TenderID: targetTender, TargetPositionID: targetPosition, SourceKind: "archive", SourceID: sourceMaterial, ExpectedSourceRate: 2070000, ParentWorkItemID: &work.ItemID, ConversionCoefficient: ptr(.25), ExpectedRevision: 1, RequestKey: "linked-create-material-001", Confirm: true}
+	captureReviewSource(t, ctx, svc, &newMat)
 	bad := newMat
 	bad.Quantity = ptr(999)
 	if _, err := svc.ApplyDirectPrice(ctx, p, bad); !errors.Is(err, repository.ErrLinkedMaterialQuantity) {
@@ -143,6 +145,7 @@ func TestDirectPricingLinkedMaterialsAreDerivedAndAtomic(t *testing.T) {
 		candidate := newMat
 		candidate.ParentWorkItemID, candidate.ExpectedRevision = &parent, 7
 		candidate.RequestKey = []string{"linked-invalid-parent-001", "linked-invalid-parent-002", "linked-invalid-parent-003"}[i]
+		captureReviewSource(t, ctx, svc, &candidate)
 		if _, err := svc.ApplyDirectPrice(ctx, p, candidate); !errors.Is(err, repository.ErrDirectParentInvalid) {
 			t.Fatalf("parent %s: %v", parent, err)
 		}
@@ -155,6 +158,7 @@ func TestDirectPricingLinkedMaterialsAreDerivedAndAtomic(t *testing.T) {
 	}
 	defer pool.Exec(ctx, `UPDATE public.material_names SET unit='шт' WHERE id='eeeeeeee-1000-0000-0000-000000000005'`)
 	differentUnits := DirectPricingInput{TenderID: targetTender, TargetPositionID: targetPosition, SourceKind: "library", LibraryKind: "material", SourceID: libraryMat, ExpectedSourceRate: 5049, DetailCostCategoryID: &category, ParentWorkItemID: &work.ItemID, ExpectedRevision: 7, RequestKey: "linked-different-units-001", Confirm: true}
+	captureReviewSource(t, ctx, svc, &differentUnits)
 	if _, err := svc.ApplyDirectPrice(ctx, p, differentUnits); !errors.Is(err, ErrInvalidPricingInput) {
 		t.Fatalf("implicit unit conversion accepted: %v", err)
 	}

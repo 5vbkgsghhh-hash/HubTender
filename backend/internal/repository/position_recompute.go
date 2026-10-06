@@ -112,7 +112,7 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
 	}
 
-	updated, err := recomputeLinkedMaterialsTx(ctx, tx, work, changedBy, rates)
+	updated, err := recomputeLinkedMaterialsTx(ctx, tx, work, changedBy, rates, false)
 	if err != nil {
 		return 0, err
 	}
@@ -128,14 +128,15 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 
 // recomputeLinkedMaterialsTx shares the VOR recipe with direct MCP writes.
 // The caller locks the parent and owns revision, audit trigger and totals.
-func recomputeLinkedMaterialsTx(ctx context.Context, tx pgx.Tx, work *BoqItemRow, changedBy string, rates calc.CurrencyRates) ([]*BoqItemRow, error) {
-	rows, err := tx.Query(ctx,
-		`SELECT `+boqScanCols+`
+func recomputeLinkedMaterialsTx(ctx context.Context, tx pgx.Tx, work *BoqItemRow, changedBy string, rates calc.CurrencyRates, noWait bool) ([]*BoqItemRow, error) {
+	query := `SELECT ` + boqScanCols + `
 		 FROM public.boq_items
 		 WHERE parent_work_item_id = $1
-		 ORDER BY id FOR UPDATE`,
-		work.ID,
-	)
+		 ORDER BY id FOR UPDATE`
+	if noWait {
+		query += " NOWAIT"
+	}
+	rows, err := tx.Query(ctx, query, work.ID)
 	if err != nil {
 		return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: children: %w", err)
 	}

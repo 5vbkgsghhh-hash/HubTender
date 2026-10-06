@@ -9,10 +9,15 @@ The old `/pricing-drafts` URL redirects to `/positions`.
 
 1. Read an imported tender, its `financial_input_revision`, and target BOQ rows.
 2. Select an archive/library source; inspect units, source date, rate and warnings.
+   Copy its `source_version` into `expected_source_version`. Currency, delivery,
+   consumption, units or quote changes invalidate the selection even if the
+   numeric rate stays the same. Search again after a stale-source rejection.
 3. Call `tenderhub_price_boq_item` with a unique `request_key` and current revision.
    Updates also require the item ETag. Confirm the requested direct change.
 4. Read the changed row, linked materials and QA back. An identical retry
    returns the committed receipt without applying the command again.
+   Receipt replay also repairs cache invalidation and background enqueue if
+   the earlier process stopped after database commit.
 
 | Operation | Inputs |
 | --- | --- |
@@ -21,6 +26,11 @@ The old `/pricing-drafts` URL redirects to `/positions`.
 | Reprice existing item | Archive/library source, target item ID/ETag; binding and consumption are preserved |
 | Change work or standalone volume | `source_kind=current`, target item ID/ETag, `quantity`; omit source ID/rate |
 | Change linked material unit conversion | `source_kind=current`, target item ID/ETag, `conversion_coefficient`; omit `quantity` and source ID/rate |
+
+For `current`, also omit `expected_source_version`. A busy portal/agent row
+returns `DIRECT_PRICING_BUSY` without a partial write; reload and retry after
+the other edit finishes. Repricing replaces quote evidence with the new source;
+managed-library prices clear the preceding source's quote link and dates.
 
 ### Linked quantities
 

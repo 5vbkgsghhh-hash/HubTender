@@ -117,10 +117,15 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("tool error: %+v", result.Content)
 	}
+	selected, err := pricingRepo.GetArchiveItem(ctx, "eeeeeeee-5000-0000-0000-000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
 	directArgs := map[string]any{
 		"tender_id": directTender, "target_position_id": directPosition,
 		"source_kind": "archive", "source_id": "eeeeeeee-5000-0000-0000-000000000001",
 		"expected_source_rate": 2070000, "quantity": 2,
+		"expected_source_version": selected.SourceVersion,
 		"detail_cost_category_id": "eeeeeeee-0000-0000-0000-000000000002",
 		"expected_revision":       0, "request_key": "http-direct-price-create-001",
 	}

@@ -71,6 +71,17 @@ data is changed.
 - A failed child calculation rolls back work, all children, audit, provenance,
   receipt and revision together. Repeat the same request after correcting the
   cause, and ensure exactly one committed command.
+- Two commands with different keys and the same financial revision must produce
+  one successful write and one stale conflict, with no FK-lock deadlock.
+- A portal-locked target/parent/child/source must produce an actionable busy
+  conflict without waiting in a lock-order cycle or keeping a receipt.
+- A selected source version must be rejected if currency, units, delivery,
+  consumption or quote evidence changes before service validation or DB commit.
+- Search `source_version` must match the commit lookup token. Changing the source
+  requires a fresh selection; use `expected_source_version` for archive/library.
+- Repricing must replace quote link/date/expiry together, clearing missing fields.
+- Receipt replay must restore invalidation/enqueue after a missed post-commit
+  callback, without another BOQ change or financial input revision.
 - Engineer receives 403 for shared template mutations; leading engineer,
   administrator, and developer can proceed only after elicited confirmation.
 - QA direct total equals a fresh TenderHUB reread; every directly priced row has an

@@ -1,6 +1,7 @@
 # MCP v2 direct VOR verification
 
-Date: 2026-10-05, Europe/Moscow. Base: `baldmaxim/HubTender@2b2e8674b90e7d3f522db6f5d608ecc630360ffe`.
+Dates: initial verification 2026-10-05; self-review 2026-10-06, Europe/Moscow.
+Base: `baldmaxim/HubTender@2b2e8674b90e7d3f522db6f5d608ecc630360ffe`.
 All write tests used a disposable local PostgreSQL 17 instance, not production.
 
 ## Passed
@@ -45,6 +46,16 @@ All write tests used a disposable local PostgreSQL 17 instance, not production.
 - Existing repository integration regression: archive composition, linked
   quantity scaling, template insertion/rollback, and position totals.
 
+## Self-review corrections (2026-10-06)
+
+See [REVIEW_2026_10_06.md](REVIEW_2026_10_06.md) for reproduced defects and fixes.
+Five initially failing tests demonstrated receipt-FK deadlock, portal row wait,
+source-currency drift, obsolete quote evidence and missed cache invalidation.
+After correction, direct-write/linked-quantity/HTTP/OAuth tests pass; the two
+concurrency/busy tests passed ten repetitions. Source-search version parity,
+currency/delivery/consumption drift and quote date replacement also pass.
+The additive database migration is unchanged by the review.
+
 ## Commands
 
 ```powershell
@@ -53,8 +64,8 @@ cd backend
 go test -p 1 ./...
 go vet ./...
 go build -buildvcs=false ./cmd/server
-go test -tags=integration ./internal/services ./internal/mcpserver ./internal/mcpauth -run 'DirectPricing|AuthenticatedHTTP|OAuth' -count=1
-go test -tags=integration ./internal/repository -run 'ArchiveComposeIntegration|BoqPositionTotalsIntegration|TemplateInsertIntegration' -count=1
+go test -p 1 -tags=integration ./internal/services ./internal/mcpserver ./internal/mcpauth -run 'DirectPricing|AuthenticatedHTTP|OAuth' -count=1
+go test -p 1 -tags=integration ./internal/repository -run 'ArchiveComposeIntegration|BoqPositionTotalsIntegration|TemplateInsertIntegration' -count=1
 cd ..
 npm run lint -- --max-warnings 0
 npm run build

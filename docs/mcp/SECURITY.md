@@ -27,7 +27,11 @@
   Quantity is derived from the locked parent; consumption is copied only for
   creation and then preserved. MCP accepts only conversion edits for linked
   materials. The MCP schema rejects unknown consumption/base/unlink fields.
-- Source rates are rechecked under a row lock in the commit transaction.
+- Full source versions are rechecked under row locks in the commit transaction.
   The command result includes actual quantity and all recalculated children.
 - Retired draft/apply scopes are no longer accepted for new authorization.
   Existing tokens never acquire `pricing:write` implicitly; reconnect explicitly.
+- Receipt FK checks use tender KEY SHARE; revision serialization uses NO KEY
+  UPDATE to avoid mutually blocked lock upgrades between simultaneous receipts.
+  Source/position/item/parent/child locks use NOWAIT for MCP writes, so portal
+  lock ordering returns a conflict rather than forming a wait cycle.

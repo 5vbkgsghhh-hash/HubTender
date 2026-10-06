@@ -61,6 +61,7 @@ type PricingState struct {
 
 // DirectPricingResult is a committed BOQ change. It has no draft lifecycle.
 type DirectPricingResult struct {
+	SourceVersion          string                 `json:"source_version,omitempty"`
 	Quantity               float64                `json:"quantity"`
 	ParentWorkItemID       *string                `json:"parent_work_item_id,omitempty"`
 	ConversionCoefficient  *float64               `json:"conversion_coefficient,omitempty"`
@@ -110,6 +111,7 @@ type ArchiveSearchInput struct {
 }
 
 type ArchiveCandidate struct {
+	SourceVersion          string    `json:"source_version"`
 	ItemID                 string    `json:"item_id"`
 	TenderID               string    `json:"tender_id"`
 	TenderTitle            string    `json:"tender_title"`
@@ -149,6 +151,7 @@ type ArchiveCandidate struct {
 }
 
 type LibraryCandidate struct {
+	SourceVersion          string   `json:"source_version"`
 	ID                     string   `json:"id"`
 	Kind                   string   `json:"kind"`
 	Name                   string   `json:"name"`
@@ -221,6 +224,7 @@ type ProposedItem struct {
 }
 
 type SourceRef struct {
+	Version    string     `json:"version,omitempty"`
 	TenderID   *string    `json:"tender_id,omitempty"`
 	ItemID     *string    `json:"item_id,omitempty"`
 	TemplateID *string    `json:"template_id,omitempty"`

@@ -19,7 +19,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/services"
 )
 
-const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item.`
+const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item.`
 
 type Config struct {
 	MaxRequestBodyBytes int64
@@ -114,6 +114,7 @@ type directReceiptInput struct {
 	RequestKey string `json:"request_key"`
 }
 type directPriceInput struct {
+	ExpectedSourceVersion string   `json:"expected_source_version,omitempty" jsonschema:"Required source_version from the selected archive/library search result. Covers currency, units, delivery, consumption and quote evidence. Omit for current"`
 	DetailCostCategoryID  *string  `json:"detail_cost_category_id,omitempty" jsonschema:"Required for a new library item; use tenderhub_list_cost_categories"`
 	TenderID              string   `json:"tender_id"`
 	TargetPositionID      string   `json:"target_position_id"`
@@ -280,7 +281,7 @@ func registerTools(server *mcp.Server, svc *services.PricingService, principal p
 			ParentWorkItemID:     in.ParentWorkItemID,
 			DetailCostCategoryID: in.DetailCostCategoryID,
 			SourceKind:           in.SourceKind, SourceID: in.SourceID, LibraryKind: in.LibraryKind,
-			ExpectedSourceRate:    in.ExpectedSourceRate,
+			ExpectedSourceRate: in.ExpectedSourceRate, ExpectedSourceVersion: in.ExpectedSourceVersion,
 			ConversionCoefficient: in.ConversionCoefficient,
 			Quantity:              in.Quantity, ExpectedETag: in.ExpectedETag, ExpectedRevision: in.ExpectedRevision,
 			RequestKey: in.RequestKey, Rationale: in.Rationale, Confirm: true,

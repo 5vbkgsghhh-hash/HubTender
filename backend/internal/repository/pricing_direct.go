@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -19,6 +18,7 @@ var (
 	ErrDirectTargetInvalid    = errors.New("DIRECT_TARGET_INVALID: position must be a leaf in the selected tender")
 	ErrDirectParentInvalid    = errors.New("DIRECT_PARENT_INVALID: parent must be a work row in the same VOR position")
 	ErrLinkedMaterialQuantity = errors.New("LINKED_MATERIAL_QUANTITY_READ_ONLY: omit quantity; the server calculates it from the parent work and stored consumption; edit conversion_coefficient for unit conversion")
+	ErrDirectPricingBusy      = errors.New("DIRECT_PRICING_BUSY: a portal or agent edit holds a required row; reload and retry the uncommitted request")
 )
 
 type DirectPricingCommit struct {
@@ -105,7 +105,13 @@ func (r *PricingRepo) ListDirectCostCategories(ctx context.Context, search strin
 
 // ApplyDirectPricing commits one source-backed BOQ mutation. The request key
 // makes creation safe to retry when an MCP response is lost after commit.
-func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCommit) (*pricing.DirectPricingResult, error) {
+func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCommit) (result *pricing.DirectPricingResult, err error) {
+	defer func() {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+			err = ErrDirectPricingBusy
+		}
+	}()
 	// The tender and target rows are locked explicitly. Read committed lets an
 	// identical concurrent request observe the committed command receipt after
 	// ON CONFLICT waits, while revision/ETag checks still reject stale writes.
@@ -144,10 +150,12 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 		return nil, err
 	}
 
+	// Receipt insertion holds FK KEY SHARE on the tender. NO KEY UPDATE
+	// serializes revisions without conflicting with other receipts' FK locks.
 	var revision int64
 	var rates calc.CurrencyRates
 	err = tx.QueryRow(ctx, `SELECT financial_input_revision,usd_rate,eur_rate,cny_rate
-		FROM public.tenders WHERE id=$1 FOR UPDATE`, in.TenderID).
+		FROM public.tenders WHERE id=$1 FOR NO KEY UPDATE`, in.TenderID).
 		Scan(&revision, &rates.USDRate, &rates.EURRate, &rates.CNYRate)
 	if err != nil {
 		return nil, err
@@ -157,50 +165,31 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	}
 	var positionTender string
 	var leaf bool
-	err = tx.QueryRow(ctx, `SELECT cp.tender_id::text,
-		NOT EXISTS (SELECT 1 FROM public.client_positions child WHERE child.parent_position_id=cp.id)
-		FROM public.client_positions cp WHERE cp.id=$1 FOR UPDATE OF cp`,
-		in.Operation.TargetPositionID).Scan(&positionTender, &leaf)
+	// Lock before checking the hierarchy in a fresh statement snapshot. The
+	// stronger position lock also blocks FK references from a new child while
+	// the leaf-only write is in progress; only the tender lock needs NO KEY.
+	err = tx.QueryRow(ctx, `SELECT tender_id::text FROM public.client_positions
+		WHERE id=$1 FOR UPDATE NOWAIT`, in.Operation.TargetPositionID).Scan(&positionTender)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrDirectTargetInvalid
 		}
 		return nil, err
 	}
-	if positionTender != in.TenderID || !leaf {
+	if positionTender != in.TenderID {
 		return nil, ErrDirectTargetInvalid
 	}
-	// Check the selected rate under a lock in the same transaction as the BOQ
-	// write, closing the service-read/commit race with a source editor.
+	if err := tx.QueryRow(ctx, `SELECT NOT EXISTS (
+		SELECT 1 FROM public.client_positions WHERE parent_position_id=$1
+	)`, in.Operation.TargetPositionID).Scan(&leaf); err != nil {
+		return nil, err
+	}
+	if !leaf {
+		return nil, ErrDirectTargetInvalid
+	}
 	if in.Operation.SourceKind != "current" {
-		var sourceRate *float64
-		src := in.Operation.SourceRef
-		switch in.Operation.SourceKind {
-		case "archive":
-			if src.ItemID == nil {
-				return nil, ErrDirectPricingStale
-			}
-			err = tx.QueryRow(ctx, "SELECT unit_rate FROM public.boq_items WHERE id=$1 FOR SHARE", *src.ItemID).Scan(&sourceRate)
-		case "library":
-			if src.LibraryID == nil {
-				return nil, ErrDirectPricingStale
-			}
-			query := "SELECT unit_rate FROM public.materials_library WHERE id=$1 FOR SHARE"
-			if calc.IsWorkBoqType(in.Operation.ProposedPayload.BoqItemType) {
-				query = "SELECT unit_rate FROM public.works_library WHERE id=$1 FOR SHARE"
-			}
-			err = tx.QueryRow(ctx, query, *src.LibraryID).Scan(&sourceRate)
-		default:
-			return nil, ErrDirectTargetInvalid
-		}
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrDirectPricingStale
-		}
-		if err != nil {
+		if err := validateDirectSourceTx(ctx, tx, in.Operation); err != nil {
 			return nil, err
-		}
-		if sourceRate == nil || src.Rate == nil || math.Abs(*sourceRate-*src.Rate) > 0.000001 {
-			return nil, ErrDirectPricingStale
 		}
 	}
 
@@ -209,7 +198,7 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 		if in.Operation.TargetItemID == nil || in.Operation.ExpectedETag == nil {
 			return nil, ErrDirectPricingStale
 		}
-		old, err = scanBoqItemRow(tx.QueryRow(ctx, "SELECT "+boqScanCols+" FROM public.boq_items WHERE id=$1 FOR UPDATE", *in.Operation.TargetItemID))
+		old, err = scanBoqItemRow(tx.QueryRow(ctx, "SELECT "+boqScanCols+" FROM public.boq_items WHERE id=$1 FOR UPDATE NOWAIT", *in.Operation.TargetItemID))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, ErrDirectPricingStale
@@ -236,7 +225,7 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 			return nil, ErrDirectParentInvalid
 		}
 		parent, err := scanBoqItemRow(tx.QueryRow(ctx, "SELECT "+boqScanCols+
-			" FROM public.boq_items WHERE id=$1 FOR UPDATE", *parentID))
+			" FROM public.boq_items WHERE id=$1 FOR UPDATE NOWAIT", *parentID))
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, ErrDirectParentInvalid
@@ -265,7 +254,8 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	}
 	var item *BoqItemRow
 	if old != nil {
-		if err := validateQuoteDates(payload.QuotePriceDate, payload.QuoteValidUntil, old); err != nil {
+		// This is a full replacement of quote evidence, not a partial PATCH.
+		if err := validateQuoteDates(payload.QuotePriceDate, payload.QuoteValidUntil, &BoqItemRow{}); err != nil {
 			return nil, err
 		}
 		total, err := calculateProposedTotal(payload, old.ParentWorkItemID, rates)
@@ -323,7 +313,7 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	}
 	children := []*BoqItemRow{}
 	if calc.IsWorkBoqType(item.BoqItemType) && old != nil {
-		children, err = recomputeLinkedMaterialsTx(ctx, tx, item, in.ActorID, rates)
+		children, err = recomputeLinkedMaterialsTx(ctx, tx, item, in.ActorID, rates, true)
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +321,7 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	if err := recomputePositionTotalsByIDsTx(ctx, tx, []string{in.Operation.TargetPositionID}); err != nil {
 		return nil, err
 	}
-	result := directPricingResult(in, item, newRevision, false)
+	result = directPricingResult(in, item, newRevision, false)
 	for _, child := range children {
 		result.LinkedMaterials = append(result.LinkedMaterials, pricing.LinkedMaterialResult{
 			ItemID: child.ID, Quantity: *child.Quantity, TotalAmount: *child.TotalAmount,
@@ -359,6 +349,7 @@ func directPricingResult(in DirectPricingCommit, item *BoqItemRow, revision int6
 		ItemID: item.ID, Action: in.Operation.Action, SourceKind: in.Operation.SourceKind,
 		ETag: pricingETag(item.ID, item.UpdatedAt), FinancialInputRevision: revision,
 		Warnings: in.Operation.Warnings, Replayed: replayed,
+		SourceVersion:    in.Operation.SourceRef.Version,
 		ParentWorkItemID: item.ParentWorkItemID, ConversionCoefficient: item.ConversionCoefficient,
 		ConsumptionCoefficient: item.ConsumptionCoefficient, LinkedMaterials: []pricing.LinkedMaterialResult{},
 	}
