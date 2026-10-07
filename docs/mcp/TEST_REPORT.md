@@ -59,6 +59,11 @@ The additive database migration is unchanged by the review.
 
 ## Catalog creation (2026-10-07)
 
+Full catalog review: [REVIEW_CATALOG_2026_10_07.md](REVIEW_CATALOG_2026_10_07.md).
+Confirmed/fixed exact-price consent formatting and HTTP replay after a later
+nomenclature edit. Negative checks cover inactive units, ambiguous historical
+names, receipt actor isolation, global gate and current page-access removal.
+
 - Engineer creates a new unit, work/material nomenclature and library cards,
   then inserts work and linked material into VOR using returned versions: PASS.
 - Linked quantity is server-derived (10 × 2 × 1.2 = 24), including delivery in

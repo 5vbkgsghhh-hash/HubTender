@@ -173,3 +173,50 @@ func TestCatalogCreationConcurrencyPermissionsAndStaleName(t *testing.T) {
 		t.Fatalf("forged role granted creation: %v", err)
 	}
 }
+
+func TestCatalogReviewAmbiguityInactiveUnitAndReceiptIsolation(t *testing.T) {
+	ctx, pool, svc, p := catalogTestService(t)
+	input := pricing.CatalogCreationInput{EntityType: "nomenclature", Kind: "material", Name: "MCP CATALOG TEST ambiguous", UnitCode: "шт", RequestKey: "catalog-review-ambiguous-001", Confirm: true}
+	if _, err := pool.Exec(ctx, `INSERT INTO public.material_names(name,unit) VALUES($1,'шт'),($1,'шт')`, input.Name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateCatalogEntity(ctx, p, input); !errors.Is(err, repository.ErrCatalogAmbiguous) {
+		t.Fatalf("ambiguous historical names were altered: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO public.units(code,name,is_active) VALUES('MCP-CAT-TEST','Inactive test',false)`); err != nil {
+		t.Fatal(err)
+	}
+	input.Name, input.UnitCode, input.RequestKey = "MCP CATALOG TEST inactive", "MCP-CAT-TEST", "catalog-review-inactive-001"
+	if _, err := svc.CreateCatalogEntity(ctx, p, input); !errors.Is(err, repository.ErrCatalogUnit) {
+		t.Fatalf("inactive unit accepted: %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM public.mcp_catalog_creation_requests WHERE actor_id=$1`, p.UserID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("failed creates persisted %d receipts", count)
+	}
+	input.Name, input.UnitCode, input.RequestKey = "MCP CATALOG TEST owner", "шт", "catalog-review-owner-001"
+	created, err := svc.CreateCatalogEntity(ctx, p, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Receipt lookup is actor-owned even for another otherwise approved reader.
+	r, _, err := svc.repo.GetCatalogCreationReceipt(ctx, "eeeeeeee-9000-0000-0000-000000000099", input.RequestKey)
+	if err != nil || r != nil {
+		t.Fatalf("another actor read creation %s: %+v %v", created.EntityID, r, err)
+	}
+	svc.features.WriteEnabled = false
+	input.RequestKey = "catalog-review-global-off-001"
+	if _, err := svc.CreateCatalogEntity(ctx, p, input); !errors.Is(err, ErrPricingDisabled) {
+		t.Fatalf("global write gate was bypassed: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE public.users SET allowed_pages='["/positions"]' WHERE id=$1`, p.UserID); err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Exec(ctx, `UPDATE public.users SET allowed_pages='["/positions","/library","/library/templates"]' WHERE id=$1`, p.UserID)
+	if _, err := svc.CreateCatalogEntity(ctx, p, input); !errors.Is(err, ErrPricingForbidden) {
+		t.Fatalf("library page restriction bypassed: %v", err)
+	}
+}

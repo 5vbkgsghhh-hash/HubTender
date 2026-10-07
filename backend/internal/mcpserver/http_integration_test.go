@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,8 +77,8 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	}
 	defer func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM public.mcp_catalog_creation_requests WHERE actor_id=$1`, httpEvalUser)
-		_, _ = pool.Exec(ctx, `DELETE FROM public.works_library WHERE work_name_id IN (SELECT id FROM public.work_names WHERE name='MCP HTTP CATALOG work')`)
-		_, _ = pool.Exec(ctx, `DELETE FROM public.work_names WHERE name='MCP HTTP CATALOG work'`)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.works_library WHERE work_name_id IN (SELECT id FROM public.work_names WHERE name LIKE 'MCP HTTP CATALOG %')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.work_names WHERE name LIKE 'MCP HTTP CATALOG %'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, httpEvalUser)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items WHERE tender_id=$1`, directTender)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items_audit WHERE changed_by=$1`, httpEvalUser)
@@ -97,9 +98,11 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	defer server.Close()
 	httpClient := &http.Client{Transport: bearerTransport{token: token.Token, base: http.DefaultTransport}}
 	confirmations := 0
+	confirmationMessages := []string{}
 	client := mcp.NewClient(&mcp.Implementation{Name: "integration-client", Version: "1.0.0"}, &mcp.ClientOptions{
-		ElicitationHandler: func(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		ElicitationHandler: func(_ context.Context, request *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			confirmations++
+			confirmationMessages = append(confirmationMessages, request.Params.Message)
 			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true}}, nil
 		},
 	})
@@ -187,10 +190,16 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	if name.NomenclatureItem == nil {
 		t.Fatal("typed nomenclature result missing")
 	}
-	cardArgs := map[string]any{"kind": "work", "name_id": name.EntityID, "expected_name_version": name.NomenclatureItem.Version, "unit_rate": 30, "currency": "RUB", "price_source": "Цена указана пользователем в HTTP тесте", "request_key": "http-catalog-card-001"}
+	cardArgs := map[string]any{"kind": "work", "name_id": name.EntityID, "expected_name_version": name.NomenclatureItem.Version, "unit_rate": 12345.67, "currency": "RUB", "price_source": "Цена указана пользователем в HTTP тесте", "request_key": "http-catalog-card-001"}
 	card := callCatalog("tenderhub_create_library_item", cardArgs)
 	if card.LibraryItem == nil || card.LibraryItem.SourceVersion == "" {
 		t.Fatal("typed library result missing version")
+	}
+	if !strings.Contains(confirmationMessages[len(confirmationMessages)-1], "12345.67 RUB") {
+		t.Error("confirmation rounded the user-supplied price")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE public.work_names SET name='MCP HTTP CATALOG renamed' WHERE id=$1`, name.EntityID); err != nil {
+		t.Fatal(err)
 	}
 	replayedCard := callCatalog("tenderhub_create_library_item", cardArgs)
 	if !replayedCard.Replayed || replayedCard.EntityID != card.EntityID {

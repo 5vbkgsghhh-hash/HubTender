@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/su10/hubtender/backend/internal/pricing"
@@ -105,7 +106,7 @@ func confirmCatalogCreation(ctx context.Context, req *mcp.CallToolRequest, svc *
 			if err != nil {
 				return nil, pricing.CatalogCreationResult{}, err
 			}
-			message = fmt.Sprintf("Создать общую карточку %s «%s», единица %s: цена %.6g %s, тип %s, материал %s, расход %v, доставка %s/%v? Источник цены: %s. Существующие карточки и строки ВОР не изменяются.", normalized.Kind, n.Name, n.UnitCode, normalized.UnitRate, normalized.Currency, normalized.ItemType, normalized.MaterialType, valueOrNone(normalized.ConsumptionCoefficient), normalized.DeliveryPriceType, valueOrNone(normalized.DeliveryAmount), normalized.PriceSource)
+			message = fmt.Sprintf("Создать общую карточку %s «%s», единица %s: цена %s %s, тип %s, материал %s, расход %v, доставка %s/%v? Источник цены: %s. Существующие карточки и строки ВОР не изменяются.", normalized.Kind, n.Name, n.UnitCode, strconv.FormatFloat(normalized.UnitRate, 'f', -1, 64), normalized.Currency, normalized.ItemType, normalized.MaterialType, valueOrNone(normalized.ConsumptionCoefficient), normalized.DeliveryPriceType, valueOrNone(normalized.DeliveryAmount), normalized.PriceSource)
 		}
 		return confirmationRequest(message, state), pricing.CatalogCreationResult{}, nil
 	}

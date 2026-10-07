@@ -147,6 +147,27 @@ func (s *PricingService) DescribeCatalogName(ctx context.Context, p pricing.Prin
 	if !slices.Contains([]string{"engineer", "veduschiy_inzhener", "administrator", "developer"}, u.RoleCode) {
 		return nil, ErrPricingForbidden
 	}
+	// A retry describes the already-confirmed snapshot, even if the underlying
+	// nomenclature was subsequently renamed/deleted. The hash includes client
+	// and every normalized input; a changed request cannot borrow that consent.
+	normalized, err := NormalizeCatalogCreation(in)
+	if err != nil {
+		return nil, err
+	}
+	_, hash, err := catalogCreationPayload(p.ClientID, normalized)
+	if err != nil {
+		return nil, err
+	}
+	prior, priorHash, err := s.repo.GetCatalogCreationReceipt(ctx, p.UserID, normalized.RequestKey)
+	if err != nil {
+		return nil, err
+	}
+	if prior != nil {
+		if priorHash != hash {
+			return nil, repository.ErrCatalogKeyReused
+		}
+		return &pricing.CatalogName{ID: normalized.NameID, Kind: normalized.Kind, Name: prior.Name, UnitCode: prior.UnitCode, Version: normalized.ExpectedNameVersion}, nil
+	}
 	n, err := s.repo.GetCatalogName(ctx, in.Kind, in.NameID)
 	if err != nil {
 		return nil, err
@@ -178,15 +199,10 @@ func (s *PricingService) CreateCatalogEntity(ctx context.Context, p pricing.Prin
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal(struct {
-		ClientID string                       `json:"client_id"`
-		Input    pricing.CatalogCreationInput `json:"input"`
-	}{p.ClientID, in})
+	encoded, hash, err := catalogCreationPayload(p.ClientID, in)
 	if err != nil {
 		return nil, err
 	}
-	bytes := sha256.Sum256(encoded)
-	hash := hex.EncodeToString(bytes[:])
 	prior, priorHash, err := s.repo.GetCatalogCreationReceipt(ctx, p.UserID, in.RequestKey)
 	if err != nil {
 		return nil, err
@@ -207,6 +223,20 @@ func (s *PricingService) CreateCatalogEntity(ctx context.Context, p pricing.Prin
 		s.invalidateCatalogCaches()
 	}
 	return out, err
+}
+
+func catalogCreationPayload(clientID string, in pricing.CatalogCreationInput) ([]byte, string, error) {
+	// Preview and execution share the fingerprint of the confirmed command.
+	in.Confirm = true
+	encoded, err := json.Marshal(struct {
+		ClientID string                       `json:"client_id"`
+		Input    pricing.CatalogCreationInput `json:"input"`
+	}{clientID, in})
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return encoded, hex.EncodeToString(sum[:]), nil
 }
 
 func (s *PricingService) invalidateCatalogCaches() {
