@@ -313,6 +313,9 @@ func allowedScopes(u *user.User) []string {
 	if !access.HasAccess(u.AllowedPages, "/positions") {
 		out = []string{ScopeTendersRead, ScopeArchiveRead, ScopeLibraryRead}
 	}
+	if slices.Contains([]string{"engineer", "veduschiy_inzhener", "administrator", "developer"}, u.RoleCode) && access.HasAccess(u.AllowedPages, "/library") {
+		out = append(out, ScopeNomenclatureCreate, ScopeLibraryCreate)
+	}
 	if slices.Contains([]string{"veduschiy_inzhener", "administrator", "developer"}, u.RoleCode) && access.HasAccess(u.AllowedPages, "/library/templates") {
 		out = append(out, ScopeTemplatesWrite)
 	}

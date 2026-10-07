@@ -409,5 +409,6 @@ func samePricingFamily(boqType, sourceKind string) bool {
 }
 
 func sameUnit(a, b *string) bool {
-	return a != nil && b != nil && strings.EqualFold(strings.TrimSpace(*a), strings.TrimSpace(*b))
+	// Codes are canonical dictionary keys. Case distinguishes SI prefixes.
+	return a != nil && b != nil && strings.TrimSpace(*a) == strings.TrimSpace(*b)
 }

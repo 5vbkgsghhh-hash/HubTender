@@ -20,6 +20,11 @@ func LibrarySourceVersion(c LibraryCandidate) string {
 	return pricingSourceVersion(c)
 }
 
+func CatalogNameVersion(n CatalogName) string {
+	n.Version = ""
+	return pricingSourceVersion(n)
+}
+
 func pricingSourceVersion(v any) string {
 	encoded, err := json.Marshal(v)
 	if err != nil {

@@ -37,7 +37,8 @@ data is changed.
    Discovery must be public and `/mcp` must return 401 with `WWW-Authenticate`.
 2. Complete OAuth in the browser and rerun with `-AccessToken`.
 3. `server/discover` and `tools/list` must return JSON-RPC results.
-4. Confirm 15 tools, including `tenderhub_list_cost_categories`, `tenderhub_list_boq_items`,
+4. Confirm 21 tools, including the six catalog tools in `CATALOG_CREATION.md`,
+   `tenderhub_list_cost_categories`, `tenderhub_list_boq_items`,
    `tenderhub_get_boq_item`, `tenderhub_get_direct_pricing_receipt`, and
    `tenderhub_price_boq_item`. No draft tool
    may be advertised. Every tool has input/output schema and annotations.

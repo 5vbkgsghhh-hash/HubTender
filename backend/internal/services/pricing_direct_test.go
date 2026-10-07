@@ -17,3 +17,10 @@ func TestDirectPricingDoesNotUpgradeRetiredOrReadScopes(t *testing.T) {
 		}
 	}
 }
+
+func TestUnitCodesDoNotFoldPhysicalPrefixes(t *testing.T) {
+	mega, milli := "MW", "mW"
+	if sameUnit(&mega, &milli) {
+		t.Fatal("mega and milli unit prefixes must not be treated as the same unit")
+	}
+}

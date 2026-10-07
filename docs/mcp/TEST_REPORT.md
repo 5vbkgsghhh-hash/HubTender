@@ -1,6 +1,7 @@
 # MCP v2 direct VOR verification
 
-Dates: initial verification 2026-10-05; self-review 2026-10-06, Europe/Moscow.
+Dates: initial verification 2026-10-05; self-review 2026-10-06;
+catalog creation verification 2026-10-07, Europe/Moscow.
 Base: `baldmaxim/HubTender@2b2e8674b90e7d3f522db6f5d608ecc630360ffe`.
 All write tests used a disposable local PostgreSQL 17 instance, not production.
 
@@ -38,7 +39,7 @@ All write tests used a disposable local PostgreSQL 17 instance, not production.
   - material, foreign-tender and missing parents are rejected;
   - different units require explicit conversion; an explicit conversion derives
     the quantity using the same parent/consumption formula.
-- Real HTTP MCP SDK round trip: 15 typed tools, confirmation, write/retry,
+- Real HTTP MCP SDK round trip: 21 typed tools, confirmation, write/retry,
   committed receipt output validation, archive search and grant revocation.
 - MCP schema rejects an attempted `consumption_coefficient` input before the
   handler/confirmation. Retired draft/apply or read scopes do not grant writes.
@@ -56,7 +57,25 @@ concurrency/busy tests passed ten repetitions. Source-search version parity,
 currency/delivery/consumption drift and quote date replacement also pass.
 The additive database migration is unchanged by the review.
 
-## Commands
+## Catalog creation (2026-10-07)
+
+- Engineer creates a new unit, work/material nomenclature and library cards,
+  then inserts work and linked material into VOR using returned versions: PASS.
+- Linked quantity is server-derived (10 × 2 × 1.2 = 24), including delivery in
+  total; attempted manual linked quantity remains rejected: PASS.
+- Exact catalog/card duplicates are reused without overwriting existing records;
+  four simultaneous requests create one nomenclature record: PASS.
+- Identical replay, changed-input key reuse rejection, disabled create gate,
+  read-only scope denial and actual-role validation: PASS.
+- Nomenclature version change between selection and card creation rolls back
+  the receipt/card; price source and confirmed input are recorded: PASS.
+- Real HTTP MCP SDK creates/reuses unit, nomenclature and card, validates nested
+  typed results, retries and reads receipt as an engineer: PASS.
+- OAuth consent/PKCE issues the explicit create-scopes for the engineer: PASS.
+- New migration repeated successfully; `MCP_CATALOG_MIGRATION_OK`.
+- Existing direct/linked/HTTP/OAuth tests pass with a 21-tool catalog.
+
+## Commands (current)
 
 ```powershell
 # TEST_DATABASE_URL must point to a disposable database with the fixture.

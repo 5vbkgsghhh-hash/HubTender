@@ -60,6 +60,7 @@ env file. Start with:
 ```dotenv
 MCP_ENABLED=true
 MCP_WRITE_ENABLED=false
+MCP_CATALOG_WRITE_ENABLED=false
 MCP_TEMPLATE_WRITE_ENABLED=false
 MCP_DCR_ENABLED=true
 ```
@@ -102,3 +103,8 @@ After read-only acceptance:
    test stale revision/ETag and an invalid source rate.
 5. Enable `MCP_TEMPLATE_WRITE_ENABLED=true` only if leading-engineer template
    UAT passes. Ordinary engineers remain blocked server-side.
+
+For engineer catalog creation, apply the additional catalog migration and follow
+`CATALOG_CREATION.md`. Enable `MCP_CATALOG_WRITE_ENABLED=true` after its staging
+tests, and reconnect with `nomenclature:create`/`library:create`. This grants
+creation only; existing template/edit/delete gates are unchanged.

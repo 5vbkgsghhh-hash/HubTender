@@ -23,3 +23,11 @@ Test work with two linked materials: manual material quantity is rejected,
 conversion changes are accepted, stored consumption is preserved, and changing
 the work quantity recalculates all children and position totals atomically.
 Deploy backend and frontend together; old write scopes require new OAuth consent.
+
+MCP 2.1 additionally creates units, work/material nomenclature and library cards.
+The user explicitly approved creation by engineers. Apply
+`2026_10_tenderhub_mcp_catalog_creation.sql` and verify it; see
+`CATALOG_CREATION.md`. Enable `MCP_CATALOG_WRITE_ENABLED` only after staging
+passes, and consent to `nomenclature:create`/`library:create`. The catalog has
+21 tools. Existing edit/delete/template role gates are unchanged; catalog tools
+only create or reuse exact existing records. Prices require a user/quote source.

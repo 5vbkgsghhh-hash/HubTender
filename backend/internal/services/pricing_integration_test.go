@@ -36,6 +36,7 @@ func seedPricingActor(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		{`INSERT INTO app_auth.oauth_clients(client_id,client_name,redirect_uris,allowed_scopes) VALUES ($1,'MCP Evaluation','["http://127.0.0.1/callback"]',$2) ON CONFLICT (client_id) DO NOTHING`, []any{evalClient, scopes}},
 		{`INSERT INTO app_auth.oauth_grants(user_id,client_id,scopes) VALUES ($1,$2,$3) ON CONFLICT (user_id,client_id) DO UPDATE SET revoked_at=NULL,scopes=EXCLUDED.scopes`, []any{evalUser, evalClient, scopes}},
 		{`DELETE FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, []any{evalUser}},
+		{`DELETE FROM public.mcp_catalog_creation_requests WHERE actor_id=$1`, []any{evalUser}},
 		{`DELETE FROM public.boq_items WHERE client_position_id IN ($1,$2)`, []any{targetPosition, templatePosition}},
 		{`DELETE FROM public.boq_items_audit WHERE changed_by=$1`, []any{evalUser}},
 		{`DELETE FROM public.pricing_drafts WHERE tender_id=$1`, []any{targetTender}},
@@ -58,6 +59,7 @@ func cleanupPricingActor(ctx context.Context, pool *pgxpool.Pool) {
 		args []any
 	}{
 		{`DELETE FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, []any{evalUser}},
+		{`DELETE FROM public.mcp_catalog_creation_requests WHERE actor_id=$1`, []any{evalUser}},
 		{`DELETE FROM public.boq_items WHERE client_position_id IN ($1,$2)`, []any{targetPosition, templatePosition}},
 		{`DELETE FROM public.boq_items_audit WHERE changed_by=$1`, []any{evalUser}},
 		{`DELETE FROM public.pricing_drafts WHERE tender_id=$1`, []any{targetTender}},

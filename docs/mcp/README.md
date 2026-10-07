@@ -5,6 +5,10 @@ MCP v2 writes directly to the existing VOR/BOQ. There is no separate draft
 section, draft tool, draft REST endpoint or draft lifecycle in the runtime.
 The old `/pricing-drafts` URL redirects to `/positions`.
 
+MCP 2.1 also creates unit definitions, work/material nomenclature and priced
+library cards for engineers. See [CATALOG_CREATION.md](CATALOG_CREATION.md) for
+the complete creation → library → VOR workflow, permissions and new migration.
+
 ## Workflow
 
 1. Read an imported tender, its `financial_input_revision`, and target BOQ rows.

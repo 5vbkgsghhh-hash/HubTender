@@ -9,8 +9,10 @@
   redirect-free, and rejects private/link-local addresses.
 - Every MCP request rechecks the active grant and current TenderHUB user status.
 - Tool handlers also enforce OAuth scope, portal page access, and role.
-- Shared library/template writes are server-gated to `veduschiy_inzhener`,
-  `administrator`, and `developer`; UI visibility is not trusted.
+- Existing portal library edit/delete and template mutations retain their senior
+  role gates. Explicitly approved MCP catalog creation additionally allows the
+  current `engineer` role with `/library`, separate create-scopes, both write
+  flags and confirmation. It never edits/deletes an existing shared record.
 - Direct pricing requires `pricing:write`, the `MCP_WRITE_ENABLED` gate, a
   current financial-input revision, and (for updates) the item's ETag. The MCP
   tool elicits explicit confirmation before the transaction, including all linked children. The

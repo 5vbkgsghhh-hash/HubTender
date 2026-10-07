@@ -25,6 +25,7 @@ var (
 
 type PricingFeatures struct {
 	WriteEnabled         bool
+	CatalogWriteEnabled  bool
 	TemplateWriteEnabled bool
 }
 

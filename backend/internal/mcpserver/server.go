@@ -19,7 +19,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/services"
 )
 
-const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item.`
+const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item. If a required work/material is missing, search nomenclature and units first; use confirmed create_unit/create_nomenclature_item/create_library_item with create-scopes and a user/quote-supplied price. The created library item gives its source_version for VOR insertion. Catalog creation never edits/deletes an existing record.`
 
 type Config struct {
 	MaxRequestBodyBytes int64
@@ -35,7 +35,7 @@ func NewHTTPHandler(svc *services.PricingService, cfg Config) http.Handler {
 		}
 		principal := pricing.Principal{UserID: u.ID, Email: u.Email, RoleCode: u.Role, Scopes: u.Scopes, ClientID: u.ClientID}
 		server := mcp.NewServer(&mcp.Implementation{
-			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.0.0",
+			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.1.0",
 			Description: "Source-backed direct VOR pricing with audit and retry-safe receipts",
 		}, &mcp.ServerOptions{Instructions: serverInstructions, SchemaCache: cache, Capabilities: &mcp.ServerCapabilities{}})
 		registerTools(server, svc, principal)
@@ -202,6 +202,7 @@ type updateTemplateInput struct {
 }
 
 func registerTools(server *mcp.Server, svc *services.PricingService, principal pricing.Principal) {
+	registerCatalogTools(server, svc, principal)
 	mcp.AddTool(server, readTool("tenderhub_whoami", "Show current TenderHUB OAuth identity and scopes", "Current TenderHUB identity and effective OAuth scopes."), func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, whoamiOutput, error) {
 		if _, err := svc.Authorize(ctx, principal, "tenders:read", "/positions"); err != nil {
 			return nil, whoamiOutput{}, err

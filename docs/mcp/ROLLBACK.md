@@ -8,6 +8,7 @@ BFF; read-only MCP remains available. To disable MCP entirely, set:
 ```dotenv
 MCP_ENABLED=false
 MCP_WRITE_ENABLED=false
+MCP_CATALOG_WRITE_ENABLED=false
 MCP_TEMPLATE_WRITE_ENABLED=false
 MCP_DCR_ENABLED=false
 ```

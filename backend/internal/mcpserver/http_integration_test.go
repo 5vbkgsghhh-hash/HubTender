@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/auth"
 	"github.com/su10/hubtender/backend/internal/mcpauth"
 	"github.com/su10/hubtender/backend/internal/middleware"
+	"github.com/su10/hubtender/backend/internal/pricing"
 	"github.com/su10/hubtender/backend/internal/repository"
 	"github.com/su10/hubtender/backend/internal/services"
 )
@@ -55,7 +57,7 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	libraryRepo := repository.NewLibraryRepo(pool)
 	pricingRepo := repository.NewPricingRepo(pool)
 	clientID := "mcp-http-evaluation"
-	scopes := []string{mcpauth.ScopeTendersRead, mcpauth.ScopeArchiveRead, mcpauth.ScopeLibraryRead, mcpauth.ScopePricingWrite}
+	scopes := []string{mcpauth.ScopeTendersRead, mcpauth.ScopeArchiveRead, mcpauth.ScopeLibraryRead, mcpauth.ScopePricingWrite, mcpauth.ScopeNomenclatureCreate, mcpauth.ScopeLibraryCreate}
 	seedHTTPActor(t, ctx, pool, clientID, scopes)
 	defer cleanupHTTPActor(ctx, pool, clientID)
 	const directTender = "eeeeeeee-3000-0000-0000-000000000010"
@@ -73,6 +75,9 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM public.mcp_catalog_creation_requests WHERE actor_id=$1`, httpEvalUser)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.works_library WHERE work_name_id IN (SELECT id FROM public.work_names WHERE name='MCP HTTP CATALOG work')`)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.work_names WHERE name='MCP HTTP CATALOG work'`)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, httpEvalUser)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items WHERE tender_id=$1`, directTender)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items_audit WHERE changed_by=$1`, httpEvalUser)
@@ -83,7 +88,7 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pricingSvc := services.NewPricingService(pricingRepo, userRepo, libraryRepo, oauthRepo, services.PricingFeatures{WriteEnabled: true})
+	pricingSvc := services.NewPricingService(pricingRepo, userRepo, libraryRepo, oauthRepo, services.PricingFeatures{WriteEnabled: true, CatalogWriteEnabled: true})
 	oauthSvc := mcpauth.NewService(oauthRepo, userRepo, mcpauth.ServiceConfig{Issuer: issuer, CodeTTL: 5 * time.Minute, DCR: true})
 	oauthHandler := mcpauth.NewHandler(oauthSvc, mcpauth.HandlerConfig{PublicBaseURL: "https://issuer.test", DCR: true})
 	mcpHandler := NewHTTPHandler(pricingSvc, Config{MaxRequestBodyBytes: 1 << 20, Logger: zerolog.Nop()})
@@ -107,7 +112,7 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 15 {
+	if len(listed.Tools) != 21 {
 		t.Fatalf("tool count=%d", len(listed.Tools))
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "tenderhub_search_archive_prices", Arguments: map[string]any{"query": "Мобильный пресс-компактор", "kind": "material", "unit_code": "шт", "limit": 5}})
@@ -157,6 +162,43 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	})
 	if err != nil || receipt.IsError {
 		t.Fatalf("read committed receipt: result=%+v err=%v", receipt, err)
+	}
+	callCatalog := func(name string, args map[string]any) pricing.CatalogCreationResult {
+		t.Helper()
+		r, e := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+		if e != nil || r.IsError {
+			t.Fatalf("catalog HTTP tool %s: result=%+v err=%v", name, r, e)
+		}
+		raw, e := json.Marshal(r.StructuredContent)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var created pricing.CatalogCreationResult
+		if e := json.Unmarshal(raw, &created); e != nil {
+			t.Fatal(e)
+		}
+		return created
+	}
+	unit := callCatalog("tenderhub_create_unit", map[string]any{"code": "шт", "name": "Штука", "request_key": "http-catalog-unit-001"})
+	if unit.Created || unit.EntityID != "шт" {
+		t.Fatalf("existing unit was not reused: %+v", unit)
+	}
+	name := callCatalog("tenderhub_create_nomenclature_item", map[string]any{"kind": "work", "name": "MCP HTTP CATALOG work", "unit_code": "шт", "request_key": "http-catalog-name-001"})
+	if name.NomenclatureItem == nil {
+		t.Fatal("typed nomenclature result missing")
+	}
+	cardArgs := map[string]any{"kind": "work", "name_id": name.EntityID, "expected_name_version": name.NomenclatureItem.Version, "unit_rate": 30, "currency": "RUB", "price_source": "Цена указана пользователем в HTTP тесте", "request_key": "http-catalog-card-001"}
+	card := callCatalog("tenderhub_create_library_item", cardArgs)
+	if card.LibraryItem == nil || card.LibraryItem.SourceVersion == "" {
+		t.Fatal("typed library result missing version")
+	}
+	replayedCard := callCatalog("tenderhub_create_library_item", cardArgs)
+	if !replayedCard.Replayed || replayedCard.EntityID != card.EntityID {
+		t.Fatal("HTTP catalog retry created a duplicate")
+	}
+	_, e := session.CallTool(ctx, &mcp.CallToolParams{Name: "tenderhub_get_catalog_creation_receipt", Arguments: map[string]any{"request_key": "http-catalog-card-001"}})
+	if e != nil {
+		t.Fatal(e)
 	}
 	if err := oauthRepo.RevokeGrant(ctx, httpEvalUser, clientID); err != nil {
 		t.Fatal(err)

@@ -278,6 +278,7 @@ func buildDeps(
 	apiAccessSvc := services.NewApiAccessService(rootCtx, apiAccessRepo)
 	pricingSvc := services.NewPricingService(pricingRepo, userRepo, libraryRepo, mcpOAuthRepo, services.PricingFeatures{
 		WriteEnabled: cfg.MCPWriteEnabled, TemplateWriteEnabled: cfg.MCPTemplateWriteEnabled,
+		CatalogWriteEnabled: cfg.MCPCatalogWriteEnabled,
 	}).WithRecalcQueue(recalcQueue).WithCache(inMemCache)
 	mcpOAuthSvc := mcpauth.NewService(mcpOAuthRepo, userRepo, mcpauth.ServiceConfig{
 		Issuer: mcpIssuer, CodeTTL: cfg.MCPAuthorizationCodeTTL,

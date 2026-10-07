@@ -3,11 +3,13 @@ package mcpauth
 import "time"
 
 const (
-	ScopeTendersRead    = "tenders:read"
-	ScopeArchiveRead    = "archive:read"
-	ScopeLibraryRead    = "library:read"
-	ScopePricingWrite   = "pricing:write"
-	ScopeTemplatesWrite = "templates:write"
+	ScopeTendersRead        = "tenders:read"
+	ScopeArchiveRead        = "archive:read"
+	ScopeLibraryRead        = "library:read"
+	ScopePricingWrite       = "pricing:write"
+	ScopeNomenclatureCreate = "nomenclature:create"
+	ScopeLibraryCreate      = "library:create"
+	ScopeTemplatesWrite     = "templates:write"
 )
 
 // CurrentScopes is the engineer-facing default published in OAuth discovery
@@ -18,6 +20,8 @@ var CurrentScopes = []string{
 	ScopeArchiveRead,
 	ScopeLibraryRead,
 	ScopePricingWrite,
+	ScopeNomenclatureCreate,
+	ScopeLibraryCreate,
 }
 
 var AllScopes = []string{
@@ -25,6 +29,8 @@ var AllScopes = []string{
 	ScopeArchiveRead,
 	ScopeLibraryRead,
 	ScopePricingWrite,
+	ScopeNomenclatureCreate,
+	ScopeLibraryCreate,
 	ScopeTemplatesWrite,
 }
 

@@ -26,8 +26,8 @@ func TestToolCatalogIsCompleteAndAnnotated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Tools) != 15 {
-		t.Fatalf("got %d tools, want 15", len(result.Tools))
+	if len(result.Tools) != 21 {
+		t.Fatalf("got %d tools, want 21", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, tool := range result.Tools {
@@ -49,6 +49,11 @@ func TestToolCatalogIsCompleteAndAnnotated(t *testing.T) {
 	for _, legacy := range []string{"tenderhub_create_pricing_draft", "tenderhub_apply_pricing_draft", "tenderhub_get_pricing_draft"} {
 		if names[legacy] {
 			t.Errorf("legacy draft tool %s is still advertised", legacy)
+		}
+	}
+	for _, want := range []string{"tenderhub_list_units", "tenderhub_search_nomenclature", "tenderhub_create_unit", "tenderhub_create_nomenclature_item", "tenderhub_create_library_item", "tenderhub_get_catalog_creation_receipt"} {
+		if !names[want] {
+			t.Errorf("missing catalog tool %s", want)
 		}
 	}
 }
