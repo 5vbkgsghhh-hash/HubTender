@@ -15,8 +15,14 @@
   flags and confirmation. It never edits/deletes an existing shared record.
 - Direct pricing requires `pricing:write`, the `MCP_WRITE_ENABLED` gate, a
   current financial-input revision, and (for updates) the item's ETag. The MCP
-  tool elicits explicit confirmation before the transaction, including all linked children. The
-  canonical Go calculation kernel computes the total.
+  tool requires explicit confirmation before the transaction, including all
+  linked children. Clients that advertise form elicitation on protocol
+  `>= 2026-07-28` receive `InputRequests` with `mode=form` and a boolean
+  `requestedSchema`. Clients without elicitation (including Cursor on
+  Stateless Streamable HTTP, where server→client `elicitation/create` cannot
+  complete) receive `CONFIRMATION_REQUIRED` with `confirmation_state` and must
+  retry with `confirmation_state` + `user_confirmed=true` only after human
+  approval. The canonical Go calculation kernel computes the total.
 - One actor/request key has one committed-command receipt. Repeating identical
   inputs returns that receipt; reusing the key for different inputs is rejected.
   Audit and source provenance commit with the BOQ item.

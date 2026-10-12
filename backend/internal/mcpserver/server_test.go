@@ -66,9 +66,16 @@ func TestDirectPricingRequestsConfirmationBeforeServiceCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmationAsked := false
+	gotMode := ""
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1"}, &mcp.ClientOptions{
-		ElicitationHandler: func(_ context.Context, _ *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		ElicitationHandler: func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			confirmationAsked = true
+			if req != nil && req.Params != nil {
+				gotMode = req.Params.Mode
+				if req.Params.RequestedSchema == nil {
+					t.Error("RequestedSchema must be set for form confirmation")
+				}
+			}
 			return &mcp.ElicitResult{Action: "decline"}, nil
 		},
 	})
@@ -87,6 +94,9 @@ func TestDirectPricingRequestsConfirmationBeforeServiceCall(t *testing.T) {
 	})
 	if !confirmationAsked {
 		t.Fatal("direct pricing did not request confirmation")
+	}
+	if gotMode != "form" {
+		t.Fatalf("elicitation mode=%q, want form", gotMode)
 	}
 	if err == nil && (result == nil || !result.IsError) {
 		t.Fatalf("declined direct pricing was not rejected: %+v", result)

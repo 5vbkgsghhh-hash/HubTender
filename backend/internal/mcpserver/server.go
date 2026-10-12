@@ -2,15 +2,11 @@ package mcpserver
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/zerolog"
 	"github.com/su10/hubtender/backend/internal/middleware"
@@ -19,7 +15,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/services"
 )
 
-const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item. If a required work/material is missing, search nomenclature and units first; use confirmed create_unit/create_nomenclature_item/create_library_item with create-scopes and a user/quote-supplied price. The created library item gives its source_version for VOR insertion. Catalog creation never edits/deletes an existing record.`
+const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. When the client advertises form elicitation (protocol >= 2026-07-28), confirmation uses mode=form InputRequests; otherwise the tool returns CONFIRMATION_REQUIRED with confirmation_state — after human approval retry with confirmation_state and user_confirmed=true. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item. If a required work/material is missing, search nomenclature and units first; use confirmed create_unit/create_nomenclature_item/create_library_item with create-scopes and a user/quote-supplied price. The created library item gives its source_version for VOR insertion. Catalog creation never edits/deletes an existing record.`
 
 type Config struct {
 	MaxRequestBodyBytes int64
@@ -35,7 +31,7 @@ func NewHTTPHandler(svc *services.PricingService, cfg Config) http.Handler {
 		}
 		principal := pricing.Principal{UserID: u.ID, Email: u.Email, RoleCode: u.Role, Scopes: u.Scopes, ClientID: u.ClientID}
 		server := mcp.NewServer(&mcp.Implementation{
-			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.1.0",
+			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.1.1",
 			Description: "Source-backed direct VOR pricing with audit and retry-safe receipts",
 		}, &mcp.ServerOptions{Instructions: serverInstructions, SchemaCache: cache, Capabilities: &mcp.ServerCapabilities{}})
 		registerTools(server, svc, principal)
@@ -130,6 +126,7 @@ type directPriceInput struct {
 	ExpectedRevision      int64    `json:"expected_revision" jsonschema:"financial_input_revision from tenderhub_get_pricing_state"`
 	RequestKey            string   `json:"request_key" jsonschema:"Unique 16-80 character idempotency key; reuse only for an identical retry"`
 	Rationale             string   `json:"rationale,omitempty"`
+	confirmationAck
 }
 type archiveSearchToolInput struct {
 	Query                string `json:"query" jsonschema:"Russian item or work description to match"`
@@ -190,6 +187,7 @@ type createTemplateInput struct {
 	DetailCostCategoryID string                             `json:"detail_cost_category_id"`
 	Works                []repository.TemplateWorkInput     `json:"works"`
 	Materials            []repository.TemplateMaterialInput `json:"materials"`
+	confirmationAck
 }
 type createTemplateOutput struct {
 	ID string `json:"id"`
@@ -199,6 +197,7 @@ type updateTemplateInput struct {
 	Name                 string                         `json:"name"`
 	DetailCostCategoryID string                         `json:"detail_cost_category_id"`
 	Items                []repository.TemplateItemPatch `json:"items"`
+	confirmationAck
 }
 
 func registerTools(server *mcp.Server, svc *services.PricingService, principal pricing.Principal) {
@@ -266,16 +265,13 @@ func registerTools(server *mcp.Server, svc *services.PricingService, principal p
 		return md("Committed direct pricing request `" + in.RequestKey + "`."), *result, nil
 	})
 	mcp.AddTool(server, destructiveTool("tenderhub_price_boq_item", "Write one BOQ row directly in the VOR", "Create/update directly from archive/library, or use source_kind=current to edit work/standalone quantity or linked material conversion. Linked material quantity is server-derived and cannot be set. Work updates atomically recalculate all linked materials. Requires pricing:write, current revision/ETag and confirmation. Reuse request_key only for identical retry; read back afterwards."), func(ctx context.Context, req *mcp.CallToolRequest, in directPriceInput) (*mcp.CallToolResult, pricing.DirectPricingResult, error) {
-		state := confirmationState(in)
-		if len(req.Params.InputResponses) == 0 {
-			action := "Create a BOQ row"
-			if in.TargetItemID != nil {
-				action = "Update an existing BOQ row"
-			}
-			return confirmationRequest(fmt.Sprintf("%s in TenderHUB VOR, tender %s, position %s, item %v, source %s/%s, source rate %.2f, requested quantity %v, conversion %v? Linked quantities are calculated from the parent; a work update recalculates every linked material. This changes direct costs immediately.", action, in.TenderID, in.TargetPositionID, valueOrNone(in.TargetItemID), in.SourceKind, in.SourceID, in.ExpectedSourceRate, valueOrNone(in.Quantity), valueOrNone(in.ConversionCoefficient)), state), pricing.DirectPricingResult{}, nil
+		action := "Create a BOQ row"
+		if in.TargetItemID != nil {
+			action = "Update an existing BOQ row"
 		}
-		if !confirmed(req, state) {
-			return nil, pricing.DirectPricingResult{}, fmt.Errorf("direct BOQ pricing was not confirmed")
+		msg := fmt.Sprintf("%s in TenderHUB VOR, tender %s, position %s, item %v, source %s/%s, source rate %.2f, requested quantity %v, conversion %v? Linked quantities are calculated from the parent; a work update recalculates every linked material. This changes direct costs immediately.", action, in.TenderID, in.TargetPositionID, valueOrNone(in.TargetItemID), in.SourceKind, in.SourceID, in.ExpectedSourceRate, valueOrNone(in.Quantity), valueOrNone(in.ConversionCoefficient))
+		if pending, err := requireConfirmation(req, msg, confirmationState(in), in.confirmationAck); pending != nil || err != nil {
+			return pending, pricing.DirectPricingResult{}, err
 		}
 		out, err := svc.ApplyDirectPrice(ctx, principal, services.DirectPricingInput{
 			TenderID: in.TenderID, TargetPositionID: in.TargetPositionID, TargetItemID: in.TargetItemID,
@@ -302,23 +298,15 @@ func registerTools(server *mcp.Server, svc *services.PricingService, principal p
 	})
 
 	mcp.AddTool(server, additiveTool("tenderhub_create_template", "Create a managed pricing template", "Create a global template. Requires templates:write and a leading-engineer/administrator/developer role."), func(ctx context.Context, req *mcp.CallToolRequest, in createTemplateInput) (*mcp.CallToolResult, createTemplateOutput, error) {
-		state := confirmationState(in)
-		if len(req.Params.InputResponses) == 0 {
-			return confirmationRequest("Create global pricing template "+in.Name+"?", state), createTemplateOutput{}, nil
-		}
-		if !confirmed(req, state) {
-			return nil, createTemplateOutput{}, fmt.Errorf("template creation was not confirmed")
+		if pending, err := requireConfirmation(req, "Create global pricing template "+in.Name+"?", confirmationState(in), in.confirmationAck); pending != nil || err != nil {
+			return pending, createTemplateOutput{}, err
 		}
 		id, err := svc.CreateTemplate(ctx, principal, repository.CreateTemplateInput{Name: in.Name, DetailCostCategoryID: in.DetailCostCategoryID, Works: in.Works, Materials: in.Materials})
 		return md("Created managed template `" + id + "`."), createTemplateOutput{id}, err
 	})
 	mcp.AddTool(server, destructiveTool("tenderhub_update_template", "Update a managed pricing template", "Update global template metadata and relationships. Requires templates:write and an allowed senior role."), func(ctx context.Context, req *mcp.CallToolRequest, in updateTemplateInput) (*mcp.CallToolResult, statusOutput, error) {
-		state := confirmationState(in)
-		if len(req.Params.InputResponses) == 0 {
-			return confirmationRequest("Update global pricing template "+in.Name+"?", state), statusOutput{}, nil
-		}
-		if !confirmed(req, state) {
-			return nil, statusOutput{}, fmt.Errorf("template update was not confirmed")
+		if pending, err := requireConfirmation(req, "Update global pricing template "+in.Name+"?", confirmationState(in), in.confirmationAck); pending != nil || err != nil {
+			return pending, statusOutput{}, err
 		}
 		err := svc.UpdateTemplate(ctx, principal, in.ID, repository.UpdateTemplateInput{Name: in.Name, DetailCostCategoryID: in.DetailCostCategoryID, Items: in.Items})
 		return md("Updated managed template `" + in.ID + "`."), statusOutput{err == nil, "template updated"}, err
@@ -346,19 +334,4 @@ func md(text string) *mcp.CallToolResult {
 		return nil
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
-}
-func confirmationState(v any) string {
-	raw, _ := json.Marshal(v)
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
-}
-func confirmationRequest(message, state string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{"confirm": &mcp.ElicitParams{Message: message, RequestedSchema: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"confirm": {Type: "boolean", Description: "Set true only after reviewing the proposed change."}}, Required: []string{"confirm"}}}}, RequestState: state}
-}
-func confirmed(req *mcp.CallToolRequest, state string) bool {
-	if req.Params.RequestState != state {
-		return false
-	}
-	r, ok := req.Params.InputResponses["confirm"].(*mcp.ElicitResult)
-	return ok && r.Action == "accept" && r.Content["confirm"] == true
 }
