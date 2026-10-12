@@ -84,7 +84,10 @@ rows = s.get(f"{base}/api/v1/tenders/{tenders[0]['id']}/boq-items-full").json()[
 ```
 
 Клиент на любом языке генерируется из спецификации:
-`curl -s $BASE/api/v1/archive/openapi.yaml > tenderhub-openapi.yaml` → `openapi-generator`.
+`curl -s -H "$H" $BASE/api/v1/archive/openapi.yaml > tenderhub-openapi.yaml` →
+`openapi-generator`. Заголовок с ключом нужен и здесь — без него 401. Спецификация
+покрывает архив, чтение тендера и запись строк; «Проверка данных» и «Перечень тендеров»
+описаны только в [VERIFICATION.md](VERIFICATION.md) и [REGISTRY.md](REGISTRY.md).
 
 ## Типовые проблемы
 

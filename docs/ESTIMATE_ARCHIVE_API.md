@@ -42,6 +42,8 @@ curl -s "$BASE/api/v1/archive/positions/search?q=стяжка" -H "X-API-Key: th
 | Область `archive:write` — `compose` | 403 |
 | Область `tenders:read` — список тендеров, шапка, позиции с итогами, строки сметы | 403 |
 | Область `tenders:write` — запись строк BOQ в позиции тендера | 403 |
+| Области `verification:read` / `verification:write` — «Проверка данных» | 403 |
+| Области `registry:read` / `registry:write` — «Перечень тендеров»; только по ключу и без списка тендеров | 403 |
 | Список разрешённых тендеров (пусто = все) | 403 при чужом тендере |
 | Срок действия, отзыв | 401 (просроченный и отозванный не находятся вовсе) |
 | Лимит запросов в минуту | 429 |
@@ -82,181 +84,27 @@ curl -s "$BASE/api/v1/archive/positions/search?q=..." -H "Authorization: Bearer 
 `POST /api/v1/admin/api-access/keys/{id}/revoke`, `DELETE .../keys/{id}`,
 `GET|PUT .../settings`, `GET .../calls`.
 
-## Эндпоинты
+## Эндпоинты, сценарий сборки, коды ошибок
 
-| Метод | Путь | Назначение |
-|---|---|---|
-| GET | `/api/v1/archive/positions/search` | поиск похожих исторических позиций |
-| POST | `/api/v1/archive/positions/suggest` | батч-подбор аналогов (до 100 запросов) |
-| GET | `/api/v1/archive/positions/{id}` | историческая позиция + тендер + строки BOQ |
-| POST | `/api/v1/archive/compose` | сборка позиций целевого тендера из исторических |
-| GET | `/api/v1/archive/openapi.yaml` | спецификация |
-| GET | `/api/v1/tenders/brief` | узкий список тендеров для выбора цели: id, номер, название, заказчик, версия, архив (область `tenders:read`; ключ с ограничением видит только свои тендеры) |
-| GET | `/api/v1/tenders/{id}/overview` | шапка тендера: курсы, итог КП, число позиций и строк (область `tenders:read`) |
-| GET | `/api/v1/tenders/{id}/positions/with-costs` | позиции с итогами: себестоимость, КП, наценка (область `tenders:read`) |
-| GET | `/api/v1/tenders/{id}/positions` | список позиций тендера — сопоставить свои строки с id существующих позиций, отобрать раздел (область `tenders:read`) |
-| GET | `/api/v1/tenders/{id}/boq-items-full`, `/api/v1/positions/{id}/boq-items-full` | строки сметы с названиями, категориями затрат и КП — весь тендер или одна позиция (область `tenders:read`) |
-| GET | `/api/v1/items/{id}` | одна строка BOQ с `ETag` (область `tenders:read`) |
-| GET | `/api/v1/tenders/{id}/positions/{posId}/items` | строки позиции — проверить, что уже записано, перед повторной выгрузкой (область `tenders:read`) |
-| POST | `/api/v1/tenders/{id}/positions/{posId}/items` | создать работу/материал с `unit_rate` (область `tenders:write`) |
-| PATCH | `/api/v1/items/{id}` | обновить строку; требует `If-Match` с ETag строки (область `tenders:write`) |
-| POST | `/api/v1/positions/{id}/recompute-totals` | пересчитать итоги позиции после записи (область `tenders:write`) |
+Контракт для потребителя вынесен в каталог `api/` — здесь он не дублируется:
 
-### Как считается похожесть
+- [`api/ENDPOINTS.md`](../api/ENDPOINTS.md) — все 34 операции машинного доступа с областями;
+- [`api/ARCHIVE.md`](../api/ARCHIVE.md) — параметры поиска, как считается похожесть, сценарий
+  «найти аналог → `dry_run` → запись», тело `compose`, коды `ARCHIVE_*`;
+- [`api/VERIFICATION.md`](../api/VERIFICATION.md), [`api/REGISTRY.md`](../api/REGISTRY.md) —
+  «Проверка данных» и «Перечень тендеров».
 
-Двухступенчато: грубый SQL-префильтр по значащим токенам названия (`ILIKE`), затем взвешенная
-оценка в Go — название 50, `item_no` 30, единица 10, объём 10, нормировка **только по применимым**
-компонентам (отсутствие `item_no` в запросе не топит кандидата). Близость названия считается
-token-overlap'ом со significant-token'ами из `internal/ai/nomenclature`: «Бетон М150» против
-«Бетон М200» — конфликт марки со штрафом, а не «почти совпало».
-
-## Типовой сценарий: найти аналог → dry_run → запись
-
-### 1. Найти похожие позиции в архиве
-
-```bash
-curl -sG "$BASE/api/v1/archive/positions/search" \
-  -H "Authorization: Bearer $TOKEN" \
-  --data-urlencode 'q=Устройство цементно-песчаной стяжки' \
-  --data-urlencode 'unit_code=м2' \
-  --data-urlencode 'volume=1200' \
-  --data-urlencode "exclude_tender_id=$TARGET_TENDER" \
-  --data-urlencode 'limit=10'
-```
-
-Каждое попадание несёт `score`, `score_breakdown`, контекст тендера (номер, версия, клиент,
-дата, признак согласования) и удельные стоимости позиции — по ним видно, какая история
-релевантна.
-
-### 2. Посмотреть состав понравившейся позиции
-
-```bash
-curl -s "$BASE/api/v1/archive/positions/$SRC_POSITION" -H "Authorization: Bearer $TOKEN"
-```
-
-Вернутся позиция, тендер-источник (включая его курсы — как справка) и все строки BOQ.
-
-### 3. Прогнать сборку вхолостую
-
-```bash
-curl -s -X POST "$BASE/api/v1/archive/compose?verbose=1" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<JSON
-{
-  "target_tender_id": "$TARGET_TENDER",
-  "dry_run": true,
-  "groups": [{
-    "temp_id": "g1",
-    "target": {
-      "new_position": {
-        "work_name": "Устройство стяжки",
-        "unit_code": "м2",
-        "volume": 1200,
-        "manual_volume": 1200
-      }
-    },
-    "sources": [{
-      "source_position_id": "$SRC_POSITION",
-      "scale": { "mode": "volume_ratio" }
-    }]
-  }]
-}
-JSON
-```
-
-`dry_run` выполняет ту же самую транзакцию и откатывает её. Значит:
-
-- срабатывают все CHECK-констрейнты и валидации — ответ честный, а не «прикидка»;
-- суммы (`total_amount`, `total_material`, `cached_grand_total`) настоящие, посчитанные
-  по конфигурации и курсам **целевого** тендера;
-- в БД не остаётся ничего, realtime-события не рассылаются, аудит не пишется;
-- id новых строк не отдаются — вместо них `index` / `parent_index`.
-
-Стоит смотреть `warnings`: `LINKED_QUANTITY_REDERIVED` означает, что у исторической строки
-количество привязанного материала было рассогласовано с формулой, и в цель уехало
-пере-выведенное значение.
-
-### 4. Записать
-
-Тот же запрос с `"dry_run": false`. Проверить после записи:
-
-```bash
-curl -s "$BASE/api/v1/tenders/$TARGET_TENDER/overview" -H "Authorization: Bearer $TOKEN"
-```
-
-`cached_grand_total` должен совпасть с ответом сборки, `financial_calculation_status` —
-`calculated`, а `financial_calculation_revision` — равняться `financial_input_revision`.
-
-## Что нужно знать перед записью
-
-- **Сначала тендер, потом позиции.** `GET /api/v1/tenders/brief` (область
-  `tenders:read`) отдаёт id, номер, название, заказчика, версию, `is_archived`,
-  `housing_class`, `construction_scope`; фильтры `search`, `is_archived`. Ключ с
-  ограничением по тендерам видит только их.
-- **Чтобы писать в существующие позиции, нужны их id.** Их даёт
-  `GET /api/v1/tenders/{id}/positions` (область `tenders:read`); ограничение
-  ключа по списку тендеров действует и здесь. В строке: `id`, `item_no`,
-  `work_name`, `client_note`, `unit_code`, `volume`, `hierarchy_level`,
-  `parent_position_id`, `is_additional`, `section_number` и два производных
-  признака: `is_section` (заголовок раздела, а не исполняемая позиция) и
-  `cost_category_name` (раздел сметы по строкам позиции — «МОНОЛИТНЫЕ РАБОТЫ»
-  и т.п.; `null`, пока позиция не расценена). Список постраничный
-  (`limit` ≤ 200, `cursor`/`next_cursor`), порядок `updated_at DESC` — для
-  иерархии сортируйте по `position_number` у себя. Если целевых позиций ещё нет,
-  создавайте их прямо в `compose` через `new_position` — отдельный доступ на запись
-  в тендер для этого не нужен.
-- **Прямая запись строк без архива** — область `tenders:write`:
-  `POST /api/v1/tenders/{id}/positions/{posId}/items` создаёт работу/материал
-  с `unit_rate`, `PATCH /api/v1/items/{id}` обновляет (обязателен `If-Match`
-  с ETag строки — его отдаёт заголовок `ETag` ответа на создание/чтение),
-  `POST /api/v1/positions/{id}/recompute-totals` пересчитывает итоги позиции.
-  Идемпотентности нет: перед повторной выгрузкой читайте
-  `GET /api/v1/tenders/{id}/positions/{posId}/items` и не создавайте то, что уже
-  записано. Ограничение ключа по тендерам действует; для `PATCH /items/{id}` и
-  `recompute-totals` тендер определяется по строке/позиции в базе.
-- **Одна группа = одна целевая позиция.** Это требование БД: FK `boq_items_parent_scope_fkey`
-  не даёт связи материал → работа пересекать позицию. Слить N исторических позиций в одну
-  целевую можно — перечислите их в `sources`.
-- **Валюта не конвертируется.** `unit_rate` и `currency_type` переносятся как есть, курс
-  применяется целевой. Если у целевого тендера нет нужного курса — 400 `MISSING_FX_RATE`
-  и полный откат. Это защита, а не ошибка: иначе строка ушла бы в базу с нулевой суммой.
-- **Производные значения не копируются никогда.** `total_amount` и коммерческие стоимости
-  считает сервер внутри той же транзакции.
-- **Масштабирование.** Работы и самостоятельные материалы умножаются на `k`. Материал,
-  привязанный к работе, пере-выводится из масштабированного родителя
-  (`parentQty × conversion × consumption`) — так результат идемпотентен относительно
-  штатного `recompute-linked-materials`.
-- **Идемпотентности нет.** Повторный POST соберёт всё второй раз. Защита — `dry_run`
-  плюс контроль на стороне вызывающего кода.
-- **Частичной сборки не бывает.** Любая 4xx откатывает транзакцию целиком.
-
-## Коды ошибок
-
-| Код | Статус | Когда |
-|---|---|---|
-| `ARCHIVE_TARGET_SPEC_INVALID` | 400 | цель группы задана неверно (ни одного или оба ключа) |
-| `ARCHIVE_NOTHING_TO_COMPOSE` | 400 | после фильтрации копировать нечего |
-| `ARCHIVE_SCALE_UNDEFINED` | 400 | `volume_ratio` без объёма источника или цели |
-| `ARCHIVE_SCALE_INVALID` | 400 | недопустимый `factor` или неизвестный режим |
-| `ARCHIVE_QUANTITY_UNDERFLOW` | 400 | после масштабирования количество стало нулевым |
-| `INVALID_BOQ_PARENT` | 400 | `source_item_ids` исключил родительскую работу |
-| `MISSING_FX_RATE` | 400 | у целевого тендера нет курса скопированной валюты |
-| `ARCHIVE_TARGET_POSITION_NOT_FOUND` | 404 | целевой позиции нет |
-| `ARCHIVE_SOURCE_POSITION_NOT_FOUND` | 404 | позиции-источника нет (или `on_missing_source: "skip"`) |
-| `ARCHIVE_SOURCE_ITEM_NOT_FOUND` | 404 | в `source_item_ids` строка чужой позиции |
-| `ARCHIVE_DUPLICATE_TARGET` | 409 | один `temp_id` или одна целевая позиция дважды |
-| `ARCHIVE_TARGET_TENDER_MISMATCH` | 409 | целевая позиция принадлежит другому тендеру |
-| `ARCHIVE_CONCURRENT_MODIFICATION` | 409 | тендер изменили параллельно, сборка отменена |
-| `API_KEY_SCOPE_DENIED` | 403 | ключу не выдана нужная область |
-| `API_KEY_TENDER_DENIED` | 403 | тендер вне списка, разрешённого ключу |
-| `ENDPOINT_DISABLED` | 503 | эндпоинт выключен в «Настройки → Доступ к API» |
-| — | 429 | превышен лимит запросов в минуту для ключа |
+Скоринг живёт в `internal/analytics/estimatearchive` (веса: название 50, `item_no` 30,
+единица 10, объём 10; отсечка по умолчанию 0.35), значащие токены — из
+`internal/ai/nomenclature`. Связь материал → работа не пересекает позицию из-за FK
+`boq_items_parent_scope_fkey` — отсюда правило «одна группа = одна целевая позиция».
 
 ## Производительность поиска
 
 Префильтр использует `ILIKE '%токен%'` — индекса под это нет. Схема в `db/yandex/sql/`
 принципиально не содержит `CREATE EXTENSION` (расширения включаются в консоли Yandex MDB),
-поэтому `pg_trgm` в первой версии не вводится. Ограничители: `candidate_limit` (по умолчанию
-500, максимум 4000), `only_latest_version` (одна версия на `tender_number`), `period_months`,
+поэтому `pg_trgm` в первой версии не вводится. Ограничители: `candidate_limit` (без параметра —
+потолок из настроек, по умолчанию 4000), `only_latest_version` (одна версия на `tender_number`), `period_months`,
 `with_boq_only`. Если поиск станет узким местом — включить `pg_trgm` в консоли, добавить
 GIN-индекс `client_positions USING gin (work_name gin_trgm_ops)` и заменить `ILIKE ANY` на
 `%` / `similarity()`: точка подмены изолирована в `LoadCandidates`
@@ -274,5 +122,5 @@ GIN-индекс `client_positions USING gin (work_name gin_trgm_ops)` и зам
 | Ключи, настройки, журнал | `backend/internal/apikey/`, `backend/internal/repository/api_access*.go`, `backend/internal/services/api_access.go`, `backend/internal/handlers/api_access.go`, `backend/internal/middleware/apikey.go` |
 | UI управления доступом | `src/pages/AdminApiAccess/`, `src/lib/api/apiAccess.ts` |
 | CLI и правило для Cursor | `scripts/archive-api.mjs`, `.cursor/rules/estimate-archive-api.mdc` |
-| Схема | `db/yandex/incremental/2026_08_api_access_control.sql` |
-| Маршруты | `backend/cmd/server/routes.go` |
+| Схема | `db/yandex/incremental/`: `2026_08_api_access_control.sql`, `2026_08_api_scope_tenders_read.sql`, `2026_08_api_scope_tenders_write.sql`, `2026_09_api_scope_verification.sql`, `2026_10_tender_registry_api.sql` |
+| Маршруты | машинные — `backend/cmd/server/routes_machine.go`; админские `/api/v1/admin/api-access/*` — `routes.go` |

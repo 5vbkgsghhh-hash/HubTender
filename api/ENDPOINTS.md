@@ -14,6 +14,48 @@
 машинный список это `GET /api/v1/tenders/brief`. Админские
 `/api/v1/admin/api-access/*` и остальные эндпоинты портала ключу тоже закрыты.
 
+## Все маршруты — 34 операции
+
+| Метод | Путь | Область |
+|---|---|---|
+| GET | `/api/v1/tenders/brief` | `tenders:read` |
+| GET | `/api/v1/tenders/{id}/overview` | `tenders:read` |
+| GET | `/api/v1/tenders/{id}/positions` | `tenders:read` |
+| GET | `/api/v1/tenders/{id}/positions/with-costs` | `tenders:read` |
+| GET | `/api/v1/tenders/{id}/positions/{posId}/items` | `tenders:read` |
+| GET | `/api/v1/tenders/{id}/boq-items-full` | `tenders:read` |
+| GET | `/api/v1/positions/{id}/boq-items-full` | `tenders:read` |
+| GET | `/api/v1/items/{id}` | `tenders:read` |
+| POST | `/api/v1/tenders/{id}/positions/{posId}/items` | `tenders:write` |
+| PATCH | `/api/v1/items/{id}` | `tenders:write` |
+| POST | `/api/v1/positions/{id}/recompute-totals` | `tenders:write` |
+| GET | `/api/v1/archive/positions/search` | `archive:read` |
+| POST | `/api/v1/archive/positions/suggest` | `archive:read` |
+| GET | `/api/v1/archive/positions/{id}` | `archive:read` |
+| POST | `/api/v1/archive/compose` | `archive:write` |
+| GET | `/api/v1/archive/openapi.yaml` | любая (нужен ключ) |
+| GET | `/api/v1/tenders/{id}/quality` | `verification:read` |
+| GET | `/api/v1/quality/rules` | `verification:read` |
+| GET | `/api/v1/tenders/{id}/verification/sections` | `verification:read` |
+| GET | `/api/v1/tenders/{id}/cost-benchmarks` | `verification:read` |
+| GET | `/api/v1/benchmark-ranges` | `verification:read` |
+| GET | `/api/v1/tenders/{id}/brief` | `verification:read` |
+| GET | `/api/v1/tenders/{id}/verification/ai-assessments` | `verification:read` |
+| POST | `/api/v1/tenders/{id}/quality/verdict` | `verification:write` |
+| POST | `/api/v1/tenders/{id}/quality/verdicts` | `verification:write` |
+| POST | `/api/v1/tenders/{id}/quality/checkpoint` | `verification:write` |
+| POST | `/api/v1/tenders/{id}/verification/sections/mark` | `verification:write` |
+| POST | `/api/v1/tenders/{id}/verification/sections/unmark` | `verification:write` |
+| PUT | `/api/v1/tenders/{id}/brief` | `verification:write` |
+| POST | `/api/v1/tenders/{id}/verification/ai-triage` | `verification:write` |
+| GET | `/api/v1/tender-registry/search` | `registry:read` |
+| GET | `/api/v1/tender-registry/{id}/card` | `registry:read` |
+| POST | `/api/v1/tender-registry/reminders/claim` | `registry:write` |
+| POST | `/api/v1/tender-registry/{id}/chronology` | `registry:write` |
+
+Тендеры и архив описаны ниже, проверка данных — в [VERIFICATION.md](VERIFICATION.md),
+перечень — в [REGISTRY.md](REGISTRY.md).
+
 ## Чтение тендеров и смет — область `tenders:read`
 
 ### `GET /api/v1/tenders/brief` — список тендеров
@@ -59,8 +101,11 @@ created_at, updated_at`.
 `updated_at DESC` — для иерархии заберите все страницы и отсортируйте по
 `position_number` (CLI `positions` делает это сам).
 
-Поля: те же, что у позиции выше, плюс `section_number, position_name` и два
-производных:
+Поля — уже, чем у `with-costs`: `id, tender_id, position_number, item_no, work_name,
+client_note, unit_code, volume, manual_volume, manual_note, hierarchy_level,
+is_additional, parent_position_id, total_material, total_works, section_number,
+position_name, created_at, updated_at`. Удельных и коммерческих стоимостей, `rich_runs`
+и агрегатов по строкам здесь нет — за ними идите в `with-costs`. Плюс два производных:
 
 - `is_section` — заголовок раздела, а не исполняемая позиция (следующая
   не-дополнительная позиция лежит глубже по `hierarchy_level`);
@@ -102,21 +147,33 @@ created_at, updated_at`.
 
 | Метод | Путь | Область | Назначение |
 |---|---|---|---|
-| GET | `/api/v1/archive/positions/search?q=…` | `archive:read` | похожие исторические позиции (`unit_code, volume, item_no, limit, min_score, exclude_tender_id, period_months`) |
-| POST | `/api/v1/archive/positions/suggest` | `archive:read` | батч-подбор до 100 запросов |
+| GET | `/api/v1/archive/positions/search?q=…` | `archive:read` | похожие исторические позиции |
+| POST | `/api/v1/archive/positions/suggest` | `archive:read` | батч-подбор, до 100 запросов в теле (потолок настраивается) |
 | GET | `/api/v1/archive/positions/{id}` | `archive:read` | историческая позиция + тендер + строки |
-| POST | `/api/v1/archive/compose` | `archive:write` | сборка позиций целевого тендера (`dry_run` по умолчанию) |
-| GET | `/api/v1/archive/openapi.yaml` | — | спецификация |
+| POST | `/api/v1/archive/compose` | `archive:write` | сборка позиций целевого тендера |
+| GET | `/api/v1/archive/openapi.yaml` | любая | спецификация; заголовок `X-API-Key` обязателен и здесь |
 
-Подробно — [`docs/ESTIMATE_ARCHIVE_API.md`](../docs/ESTIMATE_ARCHIVE_API.md).
+> **`compose` без `"dry_run": true` пишет в тендер.** Умолчание поля — `false`. Пробу
+> без записи даёт только явное `"dry_run": true`. CLI `archive-api.mjs compose` ставит
+> пробу сам и пишет лишь с флагом `--no-dry-run`.
+
+Параметры `search`: `q` (обязателен), `unit_code`, `volume`, `item_no`, `limit`,
+`min_score`, `exclude_tender_id`, `period_months`, `only_latest_version` (по умолчанию
+`true`), `with_boq_only` (по умолчанию `true`), `approved_only` (по умолчанию `false`),
+`candidate_limit`.
+
+**Передавайте `limit` явно.** Без него `search` возвращает до потолка выдачи — 200
+позиций; так же ведёт себя `limit_per_query` в `suggest`. Потолки задаёт администратор.
+
+Подробно — [ARCHIVE.md](ARCHIVE.md): как считается похожесть, сценарий сборки, коды ошибок.
 
 ## Запись строк — область `tenders:write`
 
 | Метод | Путь | Заметки |
 |---|---|---|
 | POST | `/api/v1/tenders/{id}/positions/{posId}/items` | обязателен `boq_item_type`; обычно `description, unit_code, quantity, unit_rate, currency_type`; `work_name_id`/`material_name_id` — опционально. Ответ 201 + `ETag` |
-| PATCH | `/api/v1/items/{id}` | обязателен `If-Match` с ETag; при расхождении 412 с актуальной строкой |
-| POST | `/api/v1/positions/{id}/recompute-totals` | после серии записей |
+| PATCH | `/api/v1/items/{id}` | обязателен `If-Match` с ETag строки (`If-Match: *` — любая существующая версия); без заголовка 428, при расхождении 412 с полем `current_etag` |
+| POST | `/api/v1/positions/{id}/recompute-totals` | после серии записей; ответ 204 без тела |
 
 Идемпотентности нет: перед повтором читайте строки позиции. Суммы и коммерческие
 стоимости считает сервер. Имена номенклатуры сервер не сопоставляет — либо текст в
@@ -125,7 +182,8 @@ created_at, updated_at`.
 ## Лимиты и поведение
 
 - Лимит запросов — `rate_limit_per_minute` на ключ (по умолчанию 120, окно — минута);
-  превышение → 429.
+  превышение → 429 без поля `code` и без заголовка `Retry-After`: подождите до начала
+  следующей минуты.
 - Ограничение ключа по тендерам: для маршрутов с `{id}` тендера в URL проверяется гейтом,
   для `/positions/{id}/…` и `/items/{id}` — по позиции/строке в базе, для
   `/tenders/brief` — фильтром выборки.

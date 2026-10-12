@@ -71,6 +71,8 @@ async function call(method, path, body) {
   const res = await request(method, path, body);
 
   const text = await res.text();
+  // 204 (вердикты, отметки разделов) приходит без тела — разбирать нечего.
+  if (res.ok && !text) return undefined;
   let parsed;
   try {
     parsed = JSON.parse(text);

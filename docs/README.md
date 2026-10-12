@@ -20,7 +20,9 @@
 ## Машинный доступ (API-ключ)
 
 - [`../api/README.md`](../api/README.md) — подключение помощников (Cursor, Codex, Claude Code, curl): выпуск ключа, просмотр тендеров и смет, ошибки.
-- [`ESTIMATE_ARCHIVE_API.md`](ESTIMATE_ARCHIVE_API.md) — архив смет: поиск аналогов, сборка, запись.
+- [`../api/ENDPOINTS.md`](../api/ENDPOINTS.md) — справочник всех операций по ключу; [`../api/ARCHIVE.md`](../api/ARCHIVE.md) — архив смет для потребителя.
+- [`../api/VERIFICATION.md`](../api/VERIFICATION.md) — «Проверка данных» по ключу; [`../api/REGISTRY.md`](../api/REGISTRY.md) — «Перечень тендеров» для Telegram-бота.
+- [`ESTIMATE_ARCHIVE_API.md`](ESTIMATE_ARCHIVE_API.md) — архив смет, внутреннее: авторизация, управление доступом, производительность, карта кода.
 - [`ESTIMATE_ARCHIVE_CURSOR.md`](ESTIMATE_ARCHIVE_CURSOR.md) — Cursor пошагово.
 
 ## Основные файлы документации
