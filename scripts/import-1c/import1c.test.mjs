@@ -21,6 +21,9 @@ test('CSV: кавычки, «;» внутри поля и экранирован
 test('Номера тендеров: из начала названия, дубли → .1 .2', () => {
   assert.deepEqual(parseTenderName('263. ЖК События (Донстрой)'), { baseNumber: '263', title: 'ЖК События (Донстрой)' });
   assert.equal(parseTenderName('Тестовый 31.03.2025'), null);
+  const fixed = assignTenderNumbers(['262. ЖК Дмитровское небо (этап 2.3)', '262. ЖК Дмитровское Небо, этапы 2.1, 2.2']);
+  assert.equal(fixed.get('262. ЖК Дмитровское Небо, этапы 2.1, 2.2').number, '262');
+  assert.equal(fixed.get('262. ЖК Дмитровское небо (этап 2.3)').number, '262.1');
   const m = assignTenderNumbers(['262. А', '263. Б', '262. В']);
   assert.equal(m.get('262. А').number, '262.1');
   assert.equal(m.get('262. В').number, '262.2');
@@ -226,4 +229,82 @@ test('Единицы портала: т→тн, маш/час→м-час; 298 �
   assert.deepEqual([m.get('298. ЖК Сокольники (АЙСОРС)').number, m.get('298. ЖК Сокольники (АЙСОРС)').title], ['298.1', 'ЖК Сокольники (претендер)']);
   const { parseReplace } = await import('./tenders.mjs');
   assert.deepEqual(parseReplace('269=Т-001-ГАЛС, 300'), [{ number: '269', old: 'Т-001-ГАЛС' }, { number: '300', old: '300' }]);
+});
+
+test('Часть 2: наценки — ₽/м² → %, нет показателя в 1С, соседняя версия', async () => {
+  const { perM2ToPercent, buildMarkupValues, pickMarkupSource, numComma, versionKey } = await import('./extras-data.mjs');
+  assert.equal(numComma('130251,14'), 130251.14);
+  assert.equal(numComma('NULL'), null);
+  assert.equal(versionKey('263. А', 'Версия 1 '), '263. А|Версия 1');
+  assert.equal(perM2ToPercent(300, 2000, 6e6), 10);
+  assert.equal(perM2ToPercent(300, 0, 1e6), 0);
+  assert.equal(perM2ToPercent(300, 1000, 0), 0);
+  const params = [
+    { id: 'a', key: 'mechanization_service', default_value: 5 }, { id: 'b', key: 'works_16_markup', default_value: 60 },
+    { id: 'c', key: 'subcontract_materials_cost_growth', default_value: 10 }, { id: 'd', key: 'nds_22', default_value: 22 },
+    { id: 'e', key: 'profit_own_forces', default_value: 10 }, { id: 'f', key: 'warranty_period', default_value: 5 },
+  ];
+  const src = { area: 1000, byCode: {
+    '000000009': { percent: 0, second: 300 }, '000000004': { percent: 60, second: 0 }, '000000011': { percent: 0, second: 70 },
+  } };
+  const { values, notes } = buildMarkupValues(params, src, 2000, 6e6);
+  assert.deepEqual(values, {
+    mechanization_service: 10, works_16_markup: 60, subcontract_materials_cost_growth: 0, nds_22: 20, profit_own_forces: 10,
+    warranty_period: 11.667,
+  }, 'гарантия ×5: 70 × 5 × 2000 / 6 млн × 100; НДС 20');
+  assert.equal(notes.length, 1, 'прибыли нет в 1С — значение по умолчанию с пометкой');
+  const none = buildMarkupValues(params, null, 1000, 1e6).values;
+  assert.deepEqual([none.subcontract_materials_cost_growth, none.nds_22], [10, 20], 'без источника — по умолчанию, НДС 20');
+  const index = new Map([
+    ['T|Версия 1', { number: '1', version: 1 }], ['T|Версия 2', { number: '1', version: 2 }],
+    ['T|Версия 3', { number: '1', version: 3 }], ['U|Версия 1', { number: '2', version: 1 }],
+  ]);
+  const mk = new Map([['T|Версия 1', {}], ['T|Версия 3', {}], ['U|Версия 1', {}]]);
+  assert.deepEqual(pickMarkupSource('T|Версия 2', index.get('T|Версия 2'), index, mk), { key: 'T|Версия 1', how: 'из версии 1' });
+  assert.equal(pickMarkupSource('T|Версия 3', index.get('T|Версия 3'), index, mk).how, 'своя версия');
+  assert.equal(pickMarkupSource('X|Версия 1', { number: '9', version: 1 }, index, mk), null);
+});
+
+test('Часть 2: рост субподряда — большинство суммы строк с «1», исключения по типам', async () => {
+  const { growthByMajority, exclusionRows } = await import('./extras-data.mjs');
+  const resolve = (code) => ({ c1: 'D1', c2: 'D1', c3: 'D2', c4: 'D3', c5: null })[code];
+  const byCode = new Map([
+    ['c1', { raw: 'c1', total: 100, flagged: 100, rows: 2, flaggedRows: 2 }],
+    ['c2', { raw: 'c2', total: 300, flagged: 0, rows: 3, flaggedRows: 0 }],
+    ['c3', { raw: 'c3', total: 100, flagged: 60, rows: 2, flaggedRows: 1 }],
+    ['c4', { raw: 'c4', total: 0, flagged: 0, rows: 3, flaggedRows: 2 }],
+    ['c5', { raw: 'c5', total: 50, flagged: 50, rows: 1, flaggedRows: 1 }],
+  ]);
+  const { enabled, byDetail } = growthByMajority(byCode, resolve);
+  assert.deepEqual([...enabled].sort(), ['D2', 'D3'], 'D1: 100 из 400 — нет; D2: 60 из 100; D3: нулевые суммы — по строкам');
+  assert.equal(byDetail.get('D1').total, 400);
+  const rows = exclusionRows('t', ['D1', 'D2', 'D3'], new Set(['D2']), new Set());
+  assert.deepEqual(rows.map((r) => `${r.detail_cost_category_id}:${r.exclusion_type}`),
+    ['D1:works', 'D3:works', 'D1:materials', 'D2:materials', 'D3:materials']);
+});
+
+test('Часть 2: «Затраты на строительство» и поля тендера', async () => {
+  const { buildVolumeRows, groupKeyExists, buildFieldsPatch } = await import('./extras-data.mjs');
+  const resolve = (code) => ({ '000000001': 'D1', '000000002': 'D1' })[code] ?? null;
+  const { rows, skipped } = buildVolumeRows([
+    { cost_code: '000000224', cost_name: '07. МОНОЛИТНЫЕ РАБОТЫ', qty: '1500.000', note: '' },
+    { cost_code: '000000217', cost_name: '01. ПОДГОТОВИТЕЛЬНЫЕ РАБОТЫ', qty: '130251.140', note: 'NULL' },
+    { cost_code: '000000001', cost_name: '01.01.01. Орг/ Ограждение/ Нет', qty: '756.000', note: 'п.м' },
+    { cost_code: '000000002', cost_name: '01.01.02. Орг/ Ограждение 2/ Нет', qty: '44', note: '' },
+    { cost_code: '000000099', cost_name: '99. Пусто', qty: '0.000', note: '' },
+    { cost_code: '000000098', cost_name: '98. Неизвестно', qty: '5', note: '' },
+  ], 't', resolve);
+  assert.deepEqual(rows.map((r) => [r.group_key ?? r.detail_cost_category_id, r.volume, r.notes]),
+    [['category-МОНОЛИТНЫЕ РАБОТЫ', 1500, null], ['D1', 800, 'п.м']]);
+  assert.deepEqual(skipped.map((s) => s.code), ['000000217', '000000098']);
+  const cats = [{ id: 'c1', name: 'ОТДЕЛОЧНЫЕ РАБОТЫ' }, { id: 'c2', name: 'МОНОЛИТНЫЕ РАБОТЫ' }];
+  const det = [{ cost_category_id: 'c1', location: 'Лобби' }];
+  assert.ok(groupKeyExists('location-ОТДЕЛОЧНЫЕ РАБОТЫ-Лобби', cats, det));
+  assert.ok(!groupKeyExists('location-ОТДЕЛОЧНЫЕ РАБОТЫ-ЛК', cats, det));
+  assert.ok(groupKeyExists('category-МОНОЛИТНЫЕ РАБОТЫ', cats, det));
+  assert.ok(!groupKeyExists('category-КРОВЛЯ', cats, det));
+  assert.deepEqual(buildFieldsPatch({
+    url_bsm: 'https://a', url_kp_folder: '', url_qa: 'NULL', url_tz: 'https://t', url_extra: '',
+    area_customer: '130251.140', area_sp: 'NULL', version_note: ' Примечание ', date_to: '2025-01-24',
+  }), { qa_form_link: 'https://a', tz_link: 'https://t', area_sp: 130251.14, description: 'Примечание', submission_deadline: '2025-01-24T00:00:00+03:00' });
 });

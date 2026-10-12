@@ -208,3 +208,4 @@ authorized_key.json
 
 # Загрузчик выгрузки 1С: отчёты, решения, манифест (коммерческие данные)
 scripts/import-1c/out/
+scripts/import-gsheet/out/

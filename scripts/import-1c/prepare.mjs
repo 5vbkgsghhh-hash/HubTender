@@ -11,7 +11,7 @@ export const nameKey = canonKey;
 
 /**
  * Обходит выгрузку и отдаёт собранные версии выбранных тендеров по порядку файла.
- * @param {(tender: object, version: object, built: ReturnType<typeof buildVersion>) => Promise<void>|void} cb
+ * @param {(tender: object, version: object, built: ReturnType<typeof buildVersion>, batch: object) => Promise<void>|void} cb
  */
 export const forEachBuiltVersion = async ({ csvPath, inv, maps, selected, dopOverrides }, cb) => {
   const byName = new Map(inv.tenders.map((t) => [t.name, t]));
@@ -30,7 +30,7 @@ export const forEachBuiltVersion = async ({ csvPath, inv, maps, selected, dopOve
     });
     const carried = new Map([...(prevDop.get(tender.name) ?? new Map()), ...built.nextDop]);
     prevDop.set(tender.name, carried);
-    await cb(tender, version, built);
+    await cb(tender, version, built, batch);
   }
 };
 

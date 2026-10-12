@@ -81,7 +81,7 @@ const toApiItem = (it, { positionId, dopTempId, nameIds }) => {
 };
 
 /** Заполняет оболочку версии позициями, ДОП и строками; возвращает сверку. */
-export const fillVersion = async ({ api, tenderId, built, nameIds, log }) => {
+export const fillVersion = async ({ api, tenderId, built, nameIds, log, fileName = FILE_NAME }) => {
   const rows = built.positions.map((p) => ({
     tender_id: tenderId,
     position_number: p.position_number,
@@ -134,7 +134,7 @@ export const fillVersion = async ({ api, tenderId, built, nameIds, log }) => {
   for (const [i, c] of chunks.entries()) {
     const res = await api.importBoq({
       tender_id: tenderId,
-      file_name: FILE_NAME,
+      file_name: fileName,
       items: c.items,
       position_updates: c.position_updates,
       additional_positions: c.additional_positions,
@@ -223,7 +223,6 @@ export const commitLoad = async ({ api, csvPath, inv, maps, prepared, refs, sele
         usd_rate: rate('USD'),
         eur_rate: rate('EUR'),
         cny_rate: rate('CNY'),
-        description: `Импорт из 1С (${new Date().toISOString().slice(0, 10)}): «${t.name}», «${v.label}»`,
       });
       manifest.tenders[t.number].versions[v.version] = { id: created.id, status: 'shell' };
       saveManifest(outDir, manifest);

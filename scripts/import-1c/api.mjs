@@ -7,6 +7,19 @@ const GET_RETRIES = 3;
 
 const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 
+/** Повтор идемпотентной записи при сбое сети/шлюза (статус 0 или 5xx). */
+export const withRetry = async (fn, { tries = 4, log = console.log } = {}) => {
+  for (let i = 1; ; i += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i >= tries || !(err.status === 0 || err.status >= 500)) throw err;
+      log(`  повтор ${i}: ${err.message}`);
+      await sleep(3000 * i);
+    }
+  }
+};
+
 export class ApiError extends Error {
   constructor(status, message, body) {
     super(message);
@@ -52,7 +65,9 @@ export class HubApi {
     return undefined;
   }
 
-  async call(method, path, body, { retried = false, attempt = 1 } = {}) {
+  /** opts.headers — доп. заголовки; opts.wantEtag — вернуть { json, etag }. */
+  async call(method, path, body, opts = {}) {
+    const { retried = false, attempt = 1 } = opts;
     if (!this.access) await this.login();
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -63,6 +78,7 @@ export class HubApi {
         headers: {
           Authorization: `Bearer ${this.access}`,
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...(opts.headers ?? {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
         signal: ctrl.signal,
@@ -71,18 +87,18 @@ export class HubApi {
       clearTimeout(timer);
       if (method === 'GET' && attempt < GET_RETRIES) {
         await sleep(1000 * attempt);
-        return this.call(method, path, body, { retried, attempt: attempt + 1 });
+        return this.call(method, path, body, { ...opts, attempt: attempt + 1 });
       }
       throw new ApiError(0, `${method} ${path}: сеть — ${err.message}`);
     }
     clearTimeout(timer);
     if (res.status === 401 && !retried) {
       await this.refreshTokens();
-      return this.call(method, path, body, { retried: true, attempt });
+      return this.call(method, path, body, { ...opts, retried: true });
     }
     if (res.status >= 500 && method === 'GET' && attempt < GET_RETRIES) {
       await sleep(1000 * attempt);
-      return this.call(method, path, body, { retried, attempt: attempt + 1 });
+      return this.call(method, path, body, { ...opts, attempt: attempt + 1 });
     }
     const text = await res.text();
     let json = null;
@@ -95,13 +111,14 @@ export class HubApi {
       const detail = json?.detail ?? json?.title ?? text.slice(0, 300);
       throw new ApiError(res.status, `${method} ${path}: HTTP ${res.status} — ${detail}`, json);
     }
-    return json;
+    return opts.wantEtag ? { json, etag: res.headers.get('etag') } : json;
   }
 
   get(path) { return this.call('GET', path); }
   post(path, body) { return this.call('POST', path, body); }
   patch(path, body) { return this.call('PATCH', path, body); }
-  del(path) { return this.call('DELETE', path); }
+  put(path, body) { return this.call('PUT', path, body); }
+  del(path, body) { return this.call('DELETE', path, body); }
 
   /** Все страницы курсорного списка {data, next_cursor}. */
   async getAllPages(path) {
@@ -136,4 +153,27 @@ export class HubApi {
   bulkPositions(tenderId, positions) { return this.post('/api/v1/positions/bulk', { tender_id: tenderId, positions }); }
   listPositions(tenderId) { return this.getAllPages(`/api/v1/tenders/${tenderId}/positions`); }
   importBoq(payload) { return this.post('/api/v1/imports/boq', payload); }
+
+  // ─── Наценки, рост субподряда, «Затраты на строительство» ─────────────────
+  async listMarkupParameters() { return (await this.get('/api/v1/markup/parameters')).data ?? []; }
+  async globalTactic(name) { return (await this.get(`/api/v1/markup/tactics/global-by-name?name=${encodeURIComponent(name)}`)).data; }
+  async listPercentages(tenderId) { return (await this.get(`/api/v1/tenders/${tenderId}/markup/percentages`)).data ?? []; }
+  putPercentages(tenderId, records) { return this.put(`/api/v1/tenders/${tenderId}/markup/percentages`, { records }); }
+  putTacticId(tenderId, tacticId) { return this.put(`/api/v1/tenders/${tenderId}/markup/tactic-id`, { markup_tactic_id: tacticId }); }
+  async listExclusions(tenderId) { return (await this.get(`/api/v1/tenders/${tenderId}/markup/exclusions`)).data ?? []; }
+  insertExclusions(rows) { return this.post('/api/v1/markup/exclusions/batch', { rows }); }
+  deleteExclusions(tenderId, ids, type) {
+    return this.del('/api/v1/markup/exclusions/batch', { tender_id: tenderId, detail_cost_category_ids: ids, exclusion_type: type });
+  }
+  async listCostVolumes(tenderId) { return (await this.get(`/api/v1/tenders/${tenderId}/construction-cost-volumes`)).data ?? []; }
+  upsertCostVolume(row) { return this.post('/api/v1/construction-cost-volumes', row); }
+  async boqItemsFull(tenderId) { const r = await this.get(`/api/v1/tenders/${tenderId}/boq-items-full`); return r?.data ?? r ?? []; }
+
+  // ─── Строки BOQ по одной (PATCH требует If-Match) ─────────────────────────
+  async positionItems(tenderId, posId) { return (await this.get(`/api/v1/tenders/${tenderId}/positions/${posId}/items`)).data ?? []; }
+  async itemWithEtag(id) {
+    const { json, etag } = await this.call('GET', `/api/v1/items/${id}`, undefined, { wantEtag: true });
+    return { item: json?.data ?? json, etag };
+  }
+  patchItem(id, patch, etag) { return this.call('PATCH', `/api/v1/items/${id}`, patch, { headers: { 'If-Match': etag } }); }
 }
