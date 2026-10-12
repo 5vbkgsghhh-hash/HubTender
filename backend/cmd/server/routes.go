@@ -122,11 +122,6 @@ func newRouter(
 
 			r.Get("/api/v1/tenders/{id}/pricing-state", d.pricingH.GetState)
 			r.Get("/api/v1/tenders/{id}/pricing-qa", d.pricingH.QAReport)
-			r.Get("/api/v1/pricing/drafts", d.pricingH.ListDrafts)
-			r.Get("/api/v1/pricing/drafts/{id}", d.pricingH.GetDraft)
-			r.Post("/api/v1/pricing/drafts/{id}/validate", d.pricingH.ValidateDraft)
-			r.Post("/api/v1/pricing/drafts/{id}/apply", d.pricingH.ApplyDraft)
-			r.Post("/api/v1/pricing/drafts/{id}/cancel", d.pricingH.CancelDraft)
 		}
 
 		r.Get("/api/v1/references/roles", d.refH.GetRoles)

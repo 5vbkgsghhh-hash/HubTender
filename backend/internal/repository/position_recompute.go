@@ -89,21 +89,17 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
 	}
 
-	var workQty *float64
-	var workTenderID string
-	if err := tx.QueryRow(ctx,
-		`SELECT quantity, tender_id::text FROM public.boq_items WHERE id = $1`,
-		workID,
-	).Scan(&workQty, &workTenderID); err != nil {
+	work, err := scanBoqItemRow(tx.QueryRow(ctx, "SELECT "+boqScanCols+" FROM public.boq_items WHERE id=$1 FOR UPDATE", workID))
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrWorkNotFound
 		}
-		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: work: %w", err)
+		return 0, err
 	}
-	wq := 0.0
-	if workQty != nil {
-		wq = *workQty
+	if !calc.IsWorkBoqType(work.BoqItemType) {
+		return 0, ErrDirectParentInvalid
 	}
+	workTenderID := work.TenderID
 
 	// 0-F2 (category A): one user command → one revision bump for the tender;
 	// the children's quantity/total change here, commercial recalc is async.
@@ -116,28 +112,46 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
 	}
 
-	rows, err := tx.Query(ctx,
-		`SELECT `+boqScanCols+`
+	updated, err := recomputeLinkedMaterialsTx(ctx, tx, work, changedBy, rates, false)
+	if err != nil {
+		return 0, err
+	}
+	if err := recomputePositionTotalsByIDsTx(ctx, tx, []string{work.ClientPositionID}); err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: commit: %w", err)
+	}
+	return len(updated), nil
+}
+
+// recomputeLinkedMaterialsTx shares the VOR recipe with direct MCP writes.
+// The caller locks the parent and owns revision, audit trigger and totals.
+func recomputeLinkedMaterialsTx(ctx context.Context, tx pgx.Tx, work *BoqItemRow, changedBy string, rates calc.CurrencyRates, noWait bool) ([]*BoqItemRow, error) {
+	query := `SELECT ` + boqScanCols + `
 		 FROM public.boq_items
 		 WHERE parent_work_item_id = $1
-		 FOR UPDATE`,
-		workID,
-	)
+		 ORDER BY id FOR UPDATE`
+	if noWait {
+		query += " NOWAIT"
+	}
+	rows, err := tx.Query(ctx, query, work.ID)
 	if err != nil {
-		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: children: %w", err)
+		return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: children: %w", err)
 	}
 	children := make([]*BoqItemRow, 0)
 	for rows.Next() {
 		c, scanErr := scanBoqItemRow(rows)
 		if scanErr != nil {
 			rows.Close()
-			return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: child scan: %w", scanErr)
+			return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: child scan: %w", scanErr)
 		}
 		children = append(children, c)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: children rows: %w", err)
+		return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: children rows: %w", err)
 	}
 
 	const updQ = `
@@ -146,18 +160,19 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 		WHERE id = $3
 		RETURNING ` + boqScanCols
 
-	updated := 0
+	updated := make([]*BoqItemRow, 0, len(children))
 	positionIDs := make([]string, 0, len(children))
 	for _, c := range children {
-		convVal := 1.0
-		if c.ConversionCoefficient != nil && *c.ConversionCoefficient != 0 {
-			convVal = *c.ConversionCoefficient
+		if c.TenderID != work.TenderID || !calc.IsMaterialBoqType(c.BoqItemType) {
+			return nil, ErrDirectParentInvalid
 		}
-		cons := 1.0
-		if c.ConsumptionCoefficient != nil && *c.ConsumptionCoefficient != 0 {
-			cons = *c.ConsumptionCoefficient
+		if work.Quantity == nil {
+			return nil, fmt.Errorf("parent work quantity is missing")
 		}
-		newQty := wq * convVal * cons
+		newQty, err := calc.CalculateLinkedMaterialQuantity(*work.Quantity, c.ConversionCoefficient, c.ConsumptionCoefficient)
+		if err != nil {
+			return nil, err
+		}
 
 		// Recompute total via the shared calc using the new quantity.
 		amtIn := boqAmountInputFromRow(c)
@@ -167,31 +182,28 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 			// Blocking: a missing FX rate must fail the whole recompute. The
 			// deferred tx.Rollback preserves existing correct values — no
 			// partial/zero write. Error propagates to the caller's logger.
-			return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
+			return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
 		}
 
 		oldJSON, _ := boqRowJSON(c)
 		newItem, err := scanBoqItemRow(tx.QueryRow(ctx, updQ, newQty, newTotal, c.ID))
 		if err != nil {
-			return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: update: %w", err)
+			return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: update: %w", err)
 		}
 		newJSON, _ := boqRowJSON(newItem)
 		if err := insertAudit(ctx, tx, c.ID, "UPDATE", changedBy,
 			changedFields(c, newItem), oldJSON, newJSON); err != nil {
-			return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: audit: %w", err)
+			return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: audit: %w", err)
 		}
-		updated++
+		updated = append(updated, newItem)
 		// A linked material may sit in another position than its work.
 		positionIDs = append(positionIDs, c.ClientPositionID)
 	}
 
 	if err := recomputePositionTotalsByIDsTx(ctx, tx, positionIDs); err != nil {
-		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
+		return nil, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: commit: %w", err)
-	}
 	return updated, nil
 }
 

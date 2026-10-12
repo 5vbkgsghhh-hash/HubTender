@@ -52,7 +52,7 @@ func (h *Handler) ProtectedResourceMetadata(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{
 		"resource":                 strings.TrimRight(h.cfg.PublicBaseURL, "/") + "/mcp",
 		"authorization_servers":    []string{h.cfg.PublicBaseURL},
-		"scopes_supported":         AllScopes,
+		"scopes_supported":         CurrentScopes,
 		"bearer_methods_supported": []string{"header"},
 	})
 }
@@ -69,7 +69,7 @@ func (h *Handler) AuthorizationServerMetadata(w http.ResponseWriter, r *http.Req
 		"grant_types_supported":                          []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":               []string{"S256"},
 		"token_endpoint_auth_methods_supported":          []string{"none"},
-		"scopes_supported":                               AllScopes,
+		"scopes_supported":                               CurrentScopes,
 		"authorization_response_iss_parameter_supported": true,
 		"client_id_metadata_document_supported":          true,
 	}

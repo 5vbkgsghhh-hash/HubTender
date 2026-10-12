@@ -74,6 +74,7 @@ type Config struct {
 	// MCP/OAuth integration. MCP is fail-closed until MCP_ENABLED=true.
 	MCPEnabled              bool
 	MCPWriteEnabled         bool
+	MCPCatalogWriteEnabled  bool
 	MCPTemplateWriteEnabled bool
 	MCPAudience             string
 	MCPAccessTokenTTL       time.Duration
@@ -130,6 +131,7 @@ func Load() (*Config, error) {
 	v.SetDefault("CBR_BASE_URL", "https://www.cbr.ru/scripts/XML_daily.asp")
 	v.SetDefault("MCP_ENABLED", false)
 	v.SetDefault("MCP_WRITE_ENABLED", false)
+	v.SetDefault("MCP_CATALOG_WRITE_ENABLED", false)
 	v.SetDefault("MCP_TEMPLATE_WRITE_ENABLED", false)
 	v.SetDefault("MCP_AUDIENCE", "hubtender-mcp")
 	v.SetDefault("MCP_ACCESS_TOKEN_TTL_MINUTES", 10)
@@ -241,6 +243,7 @@ func Load() (*Config, error) {
 		CBRBaseURL:              v.GetString("CBR_BASE_URL"),
 		MCPEnabled:              v.GetBool("MCP_ENABLED"),
 		MCPWriteEnabled:         v.GetBool("MCP_WRITE_ENABLED"),
+		MCPCatalogWriteEnabled:  v.GetBool("MCP_CATALOG_WRITE_ENABLED"),
 		MCPTemplateWriteEnabled: v.GetBool("MCP_TEMPLATE_WRITE_ENABLED"),
 		MCPAudience:             strings.TrimSpace(v.GetString("MCP_AUDIENCE")),
 		MCPAccessTokenTTL:       time.Duration(mcpAccessMins) * time.Minute,

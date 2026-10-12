@@ -26,7 +26,6 @@ import {
   SafetyOutlined,
   RobotOutlined,
   ApiOutlined,
-  AuditOutlined,
 } from '@ant-design/icons';
 
 /** Статическое дерево бокового меню. Фильтрация по правам/устройству — в MainLayout. */
@@ -40,11 +39,6 @@ export const menuItems: NonNullable<MenuProps['items']> = [
     key: '/positions',
     icon: <ShoppingCartOutlined />,
     label: 'Позиции заказчика',
-  },
-  {
-    key: '/pricing-drafts',
-    icon: <AuditOutlined />,
-    label: 'Черновики расценки',
   },
   {
     key: 'tender-data-group',
@@ -267,5 +261,4 @@ export const MOBILE_HIDDEN_KEYS = new Set<string>([
   '/admin/import-log',
   '/admin/insurance',
   '/admin/api-access',
-  '/pricing-drafts',
 ]);

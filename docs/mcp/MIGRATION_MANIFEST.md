@@ -4,6 +4,8 @@ Apply after the existing Yandex baseline/incrementals and before enabling MCP:
 
 ```text
 db/yandex/incremental/2026_09_tenderhub_mcp_v1.sql
+db/yandex/incremental/2026_10_tenderhub_direct_pricing.sql
+db/yandex/incremental/2026_10_tenderhub_mcp_catalog_creation.sql
 ```
 
 Objects:
@@ -16,8 +18,15 @@ Objects:
 - `public.pricing_draft_operations`
 - `public.pricing_draft_events`
 - `public.boq_item_pricing_sources`
+- nullable legacy `draft_operation_id` plus a direct request key, source
+  library ID, match level, confidence, and warnings
+- `public.mcp_direct_pricing_requests`: immutable committed-command receipt
+  keyed by actor and request key for retry safety
+- `public.mcp_catalog_creation_requests`: confirmed catalog inputs, actor/client,
+  creation/reuse result and retry receipt; normalized-name non-unique indexes
 - `pg_trgm` indexes on work/material/position names
 
-The migration is additive and idempotent. `CREATE EXTENSION pg_trgm` is a hard
-gate. Production rollback disables features but retains audit/provenance tables.
-
+Both migrations are additive and idempotent. Apply the direct-pricing migration
+before deploying the new BFF. `CREATE EXTENSION pg_trgm` is a hard gate for
+the first migration. Production rollback disables write access but retains
+audit/provenance rows and historical drafts.

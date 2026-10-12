@@ -19,7 +19,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/services"
 )
 
-const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library/template sources first, create a durable pricing draft, validate it, show the diff and warnings, and call apply only after explicit user confirmation. Never invent a rate. Leave unmatched positions unresolved.`
+const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item. If a required work/material is missing, search nomenclature and units first; use confirmed create_unit/create_nomenclature_item/create_library_item with create-scopes and a user/quote-supplied price. The created library item gives its source_version for VOR insertion. Catalog creation never edits/deletes an existing record.`
 
 type Config struct {
 	MaxRequestBodyBytes int64
@@ -35,8 +35,8 @@ func NewHTTPHandler(svc *services.PricingService, cfg Config) http.Handler {
 		}
 		principal := pricing.Principal{UserID: u.ID, Email: u.Email, RoleCode: u.Role, Scopes: u.Scopes, ClientID: u.ClientID}
 		server := mcp.NewServer(&mcp.Implementation{
-			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "1.0.0",
-			Description: "Archive-grounded tender pricing with auditable drafts",
+			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.1.0",
+			Description: "Source-backed direct VOR pricing with audit and retry-safe receipts",
 		}, &mcp.ServerOptions{Instructions: serverInstructions, SchemaCache: cache, Capabilities: &mcp.ServerCapabilities{}})
 		registerTools(server, svc, principal)
 		return server
@@ -96,6 +96,41 @@ type pricingStateInput struct {
 	Limit    int    `json:"limit,omitempty"`
 	Offset   int    `json:"offset,omitempty"`
 }
+type directItemsInput struct {
+	TenderID   string `json:"tender_id"`
+	PositionID string `json:"position_id"`
+	Limit      int    `json:"limit,omitempty"`
+	Offset     int    `json:"offset,omitempty"`
+}
+type directItemsOutput struct {
+	Items      []repository.BoqItemRow `json:"items"`
+	Pagination pricing.Page            `json:"pagination"`
+}
+type directItemOutput struct {
+	Item repository.BoqItemRow `json:"item"`
+	ETag string                `json:"etag"`
+}
+type directReceiptInput struct {
+	RequestKey string `json:"request_key"`
+}
+type directPriceInput struct {
+	ExpectedSourceVersion string   `json:"expected_source_version,omitempty" jsonschema:"Required source_version from the selected archive/library search result. Covers currency, units, delivery, consumption and quote evidence. Omit for current"`
+	DetailCostCategoryID  *string  `json:"detail_cost_category_id,omitempty" jsonschema:"Required for a new library item; use tenderhub_list_cost_categories"`
+	TenderID              string   `json:"tender_id"`
+	TargetPositionID      string   `json:"target_position_id"`
+	TargetItemID          *string  `json:"target_item_id,omitempty"`
+	ParentWorkItemID      *string  `json:"parent_work_item_id,omitempty" jsonschema:"Optional existing work row in the same VOR position for a new material"`
+	SourceKind            string   `json:"source_kind" jsonschema:"archive or library for source-backed pricing; current to edit only quantity or conversion_coefficient of an existing row"`
+	SourceID              string   `json:"source_id,omitempty" jsonschema:"Required for archive/library; omit for current"`
+	ExpectedSourceRate    float64  `json:"expected_source_rate,omitempty" jsonschema:"Required positive rate from archive/library; omit for current"`
+	LibraryKind           string   `json:"library_kind,omitempty" jsonschema:"work or material for a library source"`
+	Quantity              *float64 `json:"quantity,omitempty" jsonschema:"Positive quantity for work or standalone material only. Forbidden for a linked material: derived from the parent work on the server"`
+	ConversionCoefficient *float64 `json:"conversion_coefficient,omitempty" jsonschema:"Positive unit conversion multiplier for a linked material only. Required on creation when work and material units differ. Stored consumption cannot be edited through MCP"`
+	ExpectedETag          *string  `json:"expected_etag,omitempty" jsonschema:"Required ETag from tenderhub_get_boq_item when updating"`
+	ExpectedRevision      int64    `json:"expected_revision" jsonschema:"financial_input_revision from tenderhub_get_pricing_state"`
+	RequestKey            string   `json:"request_key" jsonschema:"Unique 16-80 character idempotency key; reuse only for an identical retry"`
+	Rationale             string   `json:"rationale,omitempty"`
+}
 type archiveSearchToolInput struct {
 	Query                string `json:"query" jsonschema:"Russian item or work description to match"`
 	Kind                 string `json:"kind,omitempty" jsonschema:"Optional work or material filter"`
@@ -131,40 +166,17 @@ type listTemplatesOutput struct {
 	Templates  []pricing.TemplateSummary `json:"templates"`
 	Pagination pricing.Page              `json:"pagination"`
 }
+type listCostCategoriesInput struct {
+	Search string `json:"search,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+}
+type listCostCategoriesOutput struct {
+	Items      []pricing.CostCategory `json:"items"`
+	Pagination pricing.Page           `json:"pagination"`
+}
 type idInput struct {
 	ID string `json:"id"`
-}
-type createDraftInput struct {
-	TenderID string `json:"tender_id"`
-}
-type addArchiveInput struct {
-	DraftID          string   `json:"draft_id"`
-	SourceItemID     string   `json:"source_item_id"`
-	TargetPositionID string   `json:"target_position_id"`
-	TargetItemID     *string  `json:"target_item_id,omitempty"`
-	Quantity         *float64 `json:"quantity,omitempty"`
-	Rationale        string   `json:"rationale,omitempty"`
-}
-type addLibraryInput struct {
-	DraftID              string   `json:"draft_id"`
-	LibraryID            string   `json:"library_id"`
-	Kind                 string   `json:"kind"`
-	TargetPositionID     string   `json:"target_position_id"`
-	TargetItemID         *string  `json:"target_item_id,omitempty"`
-	Quantity             *float64 `json:"quantity,omitempty"`
-	DetailCostCategoryID *string  `json:"detail_cost_category_id,omitempty"`
-}
-type addTemplateInput struct {
-	DraftID          string `json:"draft_id"`
-	TemplateID       string `json:"template_id"`
-	TargetPositionID string `json:"target_position_id"`
-}
-type addTemplateOutput struct {
-	Operations []pricing.DraftOperation `json:"operations"`
-}
-type applyDraftInput struct {
-	DraftID        string `json:"draft_id"`
-	ValidationHash string `json:"validation_hash"`
 }
 type qaInput struct {
 	TenderID string `json:"tender_id"`
@@ -190,6 +202,7 @@ type updateTemplateInput struct {
 }
 
 func registerTools(server *mcp.Server, svc *services.PricingService, principal pricing.Principal) {
+	registerCatalogTools(server, svc, principal)
 	mcp.AddTool(server, readTool("tenderhub_whoami", "Show current TenderHUB OAuth identity and scopes", "Current TenderHUB identity and effective OAuth scopes."), func(ctx context.Context, _ *mcp.CallToolRequest, _ emptyInput) (*mcp.CallToolResult, whoamiOutput, error) {
 		if _, err := svc.Authorize(ctx, principal, "tenders:read", "/positions"); err != nil {
 			return nil, whoamiOutput{}, err
@@ -227,67 +240,59 @@ func registerTools(server *mcp.Server, svc *services.PricingService, principal p
 		return md(fmt.Sprintf("Template **%s** contains %d items.", out.Name, len(out.Items))), *out, err
 	})
 
-	mcp.AddTool(server, additiveTool("tenderhub_create_pricing_draft", "Create an auditable pricing draft", "Create an empty seven-day pricing draft for an imported tender. This does not change BOQ prices."), func(ctx context.Context, _ *mcp.CallToolRequest, in createDraftInput) (*mcp.CallToolResult, pricing.Draft, error) {
-		out, err := svc.CreateDraft(ctx, principal, in.TenderID)
-		if out == nil {
-			return nil, pricing.Draft{}, err
+	mcp.AddTool(server, readTool("tenderhub_list_cost_categories", "List direct-cost categories", "Find a category ID for a newly created BOQ row in the VOR."), func(ctx context.Context, _ *mcp.CallToolRequest, in listCostCategoriesInput) (*mcp.CallToolResult, listCostCategoriesOutput, error) {
+		items, page, err := svc.ListDirectCostCategories(ctx, principal, in.Search, in.Limit, in.Offset)
+		return md(fmt.Sprintf("Found %d cost categories; returning %d.", page.TotalCount, len(items))), listCostCategoriesOutput{Items: items, Pagination: page}, err
+	})
+	mcp.AddTool(server, readTool("tenderhub_list_boq_items", "List BOQ rows in one VOR position", "Read existing work/material rows and IDs before a direct pricing change."), func(ctx context.Context, _ *mcp.CallToolRequest, in directItemsInput) (*mcp.CallToolResult, directItemsOutput, error) {
+		items, page, err := svc.ListDirectBoqItems(ctx, principal, in.TenderID, in.PositionID, in.Limit, in.Offset)
+		return md(fmt.Sprintf("Position has %d BOQ items; returning %d.", page.TotalCount, len(items))), directItemsOutput{Items: items, Pagination: page}, err
+	})
+	mcp.AddTool(server, readTool("tenderhub_get_boq_item", "Read a BOQ row and ETag", "Return the current BOQ inputs and ETag required for a safe direct update."), func(ctx context.Context, _ *mcp.CallToolRequest, in idInput) (*mcp.CallToolResult, directItemOutput, error) {
+		item, etag, err := svc.GetDirectBoqItem(ctx, principal, in.ID)
+		if item == nil {
+			return nil, directItemOutput{}, err
 		}
-		return md("Created pricing draft `" + out.ID + "`. Add sources, then validate."), *out, err
+		return md("BOQ item `" + item.ID + "` loaded with ETag."), directItemOutput{Item: *item, ETag: etag}, err
 	})
-	mcp.AddTool(server, additiveTool("tenderhub_add_archive_price_to_draft", "Add an archive-grounded rate to a draft", "Copy direct-price inputs from one historical BOQ item into a draft. Existing targets keep their quantity/name/category; new materials require an explicit quantity."), func(ctx context.Context, _ *mcp.CallToolRequest, in addArchiveInput) (*mcp.CallToolResult, pricing.DraftOperation, error) {
-		out, err := svc.AddArchivePrice(ctx, principal, services.AddArchivePriceInput{DraftID: in.DraftID, SourceItemID: in.SourceItemID, TargetPositionID: in.TargetPositionID, TargetItemID: in.TargetItemID, Quantity: in.Quantity, Rationale: in.Rationale})
-		if out == nil {
-			return nil, pricing.DraftOperation{}, err
+	mcp.AddTool(server, readTool("tenderhub_get_direct_pricing_receipt", "Read a committed pricing receipt", "Recover the result of a direct BOQ write by request_key after a lost response. No new write is made."), func(ctx context.Context, _ *mcp.CallToolRequest, in directReceiptInput) (*mcp.CallToolResult, pricing.DirectPricingResult, error) {
+		result, err := svc.GetDirectPricingReceipt(ctx, principal, in.RequestKey)
+		if result == nil {
+			if err == nil {
+				err = fmt.Errorf("direct pricing request %s was not found", in.RequestKey)
+			}
+			return nil, pricing.DirectPricingResult{}, err
 		}
-		return md(fmt.Sprintf("Added %s archive operation at %.0f%% confidence. Validate before applying.", out.MatchLevel, out.Confidence*100)), *out, err
+		return md("Committed direct pricing request `" + in.RequestKey + "`."), *result, nil
 	})
-	mcp.AddTool(server, additiveTool("tenderhub_add_library_item_to_draft", "Add a library rate to a draft", "Add a managed work/material library item to a pricing draft."), func(ctx context.Context, _ *mcp.CallToolRequest, in addLibraryInput) (*mcp.CallToolResult, pricing.DraftOperation, error) {
-		out, err := svc.AddLibraryItem(ctx, principal, services.AddLibraryItemInput{DraftID: in.DraftID, LibraryID: in.LibraryID, Kind: in.Kind, TargetPositionID: in.TargetPositionID, TargetItemID: in.TargetItemID, Quantity: in.Quantity, DetailCostCategoryID: in.DetailCostCategoryID})
-		if out == nil {
-			return nil, pricing.DraftOperation{}, err
+	mcp.AddTool(server, destructiveTool("tenderhub_price_boq_item", "Write one BOQ row directly in the VOR", "Create/update directly from archive/library, or use source_kind=current to edit work/standalone quantity or linked material conversion. Linked material quantity is server-derived and cannot be set. Work updates atomically recalculate all linked materials. Requires pricing:write, current revision/ETag and confirmation. Reuse request_key only for identical retry; read back afterwards."), func(ctx context.Context, req *mcp.CallToolRequest, in directPriceInput) (*mcp.CallToolResult, pricing.DirectPricingResult, error) {
+		state := confirmationState(in)
+		if len(req.Params.InputResponses) == 0 {
+			action := "Create a BOQ row"
+			if in.TargetItemID != nil {
+				action = "Update an existing BOQ row"
+			}
+			return confirmationRequest(fmt.Sprintf("%s in TenderHUB VOR, tender %s, position %s, item %v, source %s/%s, source rate %.2f, requested quantity %v, conversion %v? Linked quantities are calculated from the parent; a work update recalculates every linked material. This changes direct costs immediately.", action, in.TenderID, in.TargetPositionID, valueOrNone(in.TargetItemID), in.SourceKind, in.SourceID, in.ExpectedSourceRate, valueOrNone(in.Quantity), valueOrNone(in.ConversionCoefficient)), state), pricing.DirectPricingResult{}, nil
 		}
-		return md("Added managed library operation `" + out.ID + "`."), *out, err
-	})
-	mcp.AddTool(server, additiveTool("tenderhub_add_template_to_draft", "Expand a template into a draft", "Expand every template work/material into ordered draft operations while preserving parent links."), func(ctx context.Context, _ *mcp.CallToolRequest, in addTemplateInput) (*mcp.CallToolResult, addTemplateOutput, error) {
-		ops, err := svc.AddTemplate(ctx, principal, services.AddTemplateInput{DraftID: in.DraftID, TemplateID: in.TemplateID, TargetPositionID: in.TargetPositionID})
-		return md(fmt.Sprintf("Expanded template into %d draft operations.", len(ops))), addTemplateOutput{ops}, err
-	})
-	mcp.AddTool(server, readTool("tenderhub_get_pricing_draft", "Inspect a pricing draft", "Return the full durable draft, operations, sources, warnings and event history."), func(ctx context.Context, _ *mcp.CallToolRequest, in idInput) (*mcp.CallToolResult, pricing.Draft, error) {
-		out, err := svc.GetDraft(ctx, principal, in.ID)
-		if out == nil {
-			return nil, pricing.Draft{}, err
+		if !confirmed(req, state) {
+			return nil, pricing.DirectPricingResult{}, fmt.Errorf("direct BOQ pricing was not confirmed")
 		}
-		return md(fmt.Sprintf("Draft `%s` is **%s** with %d operations.", out.ID, out.Status, len(out.Operations))), *out, err
-	})
-	mcp.AddTool(server, additiveTool("tenderhub_validate_pricing_draft", "Validate and price-preview a draft", "Recalculate every proposed item with the authoritative server calculator, check FX, units, categories, duplicates, revisions and ETags, and return a validation hash."), func(ctx context.Context, _ *mcp.CallToolRequest, in idInput) (*mcp.CallToolResult, pricing.ValidationSummary, error) {
-		out, err := svc.ValidateDraft(ctx, principal, in.ID)
+		out, err := svc.ApplyDirectPrice(ctx, principal, services.DirectPricingInput{
+			TenderID: in.TenderID, TargetPositionID: in.TargetPositionID, TargetItemID: in.TargetItemID,
+			ParentWorkItemID:     in.ParentWorkItemID,
+			DetailCostCategoryID: in.DetailCostCategoryID,
+			SourceKind:           in.SourceKind, SourceID: in.SourceID, LibraryKind: in.LibraryKind,
+			ExpectedSourceRate: in.ExpectedSourceRate, ExpectedSourceVersion: in.ExpectedSourceVersion,
+			ConversionCoefficient: in.ConversionCoefficient,
+			Quantity:              in.Quantity, ExpectedETag: in.ExpectedETag, ExpectedRevision: in.ExpectedRevision,
+			RequestKey: in.RequestKey, Rationale: in.Rationale, Confirm: true,
+		})
 		if out == nil {
-			return nil, pricing.ValidationSummary{}, err
+			return nil, pricing.DirectPricingResult{}, err
 		}
-		return md(fmt.Sprintf("Draft validation status: **%s**. Blocking errors: %d; warnings: %d; direct delta: %.2f RUB.", out.Status, len(out.BlockingErrors), out.WarningsCount, out.DeltaDirectTotal)), *out, err
-	})
-	mcp.AddTool(server, additiveTool("tenderhub_cancel_pricing_draft", "Cancel a pricing draft", "Cancel an unapplied draft. BOQ rows are not modified."), func(ctx context.Context, _ *mcp.CallToolRequest, in idInput) (*mcp.CallToolResult, statusOutput, error) {
-		err := svc.CancelDraft(ctx, principal, in.ID)
-		return md("Draft cancelled. No BOQ prices were changed."), statusOutput{err == nil, "draft cancelled"}, err
+		return md(fmt.Sprintf("%s BOQ item `%s` directly. Revision %d; rate %.2f %s. Read back before continuing.", out.Action, out.ItemID, out.FinancialInputRevision, out.UnitRate, out.Currency)), *out, err
 	})
 
-	mcp.AddTool(server, destructiveTool("tenderhub_apply_pricing_draft", "Apply a validated draft", "Apply one validated pricing draft atomically. This tool always requires an explicit user confirmation and rejects stale validation hashes."), func(ctx context.Context, req *mcp.CallToolRequest, in applyDraftInput) (*mcp.CallToolResult, pricing.ApplyResult, error) {
-		if len(req.Params.InputResponses) == 0 {
-			return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{"confirm": &mcp.ElicitParams{Message: "Apply pricing draft " + in.DraftID + " to TenderHUB? This writes direct BOQ prices atomically.", RequestedSchema: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"confirm": {Type: "boolean", Description: "Set true only after reviewing the validated diff."}}, Required: []string{"confirm"}}}}, RequestState: in.DraftID + ":" + in.ValidationHash}, pricing.ApplyResult{}, nil
-		}
-		if req.Params.RequestState != in.DraftID+":"+in.ValidationHash {
-			return nil, pricing.ApplyResult{}, fmt.Errorf("confirmation state does not match draft/hash")
-		}
-		response, ok := req.Params.InputResponses["confirm"].(*mcp.ElicitResult)
-		if !ok || response.Action != "accept" || response.Content["confirm"] != true {
-			return nil, pricing.ApplyResult{}, fmt.Errorf("user declined pricing draft application")
-		}
-		out, err := svc.ApplyDraft(ctx, principal, in.DraftID, in.ValidationHash)
-		if out == nil {
-			return nil, pricing.ApplyResult{}, err
-		}
-		return md(fmt.Sprintf("Applied draft atomically: %d created, %d updated.", out.CreatedItems, out.UpdatedItems)), *out, err
-	})
 	mcp.AddTool(server, readTool("tenderhub_get_pricing_qa_report", "Generate a direct-price QA report", "Check leaf-position coverage, missing rates/quantities/categories/FX, weak or stale sources, provenance and direct total. Does not modify data."), func(ctx context.Context, _ *mcp.CallToolRequest, in qaInput) (*mcp.CallToolResult, pricing.QAReport, error) {
 		out, err := svc.QAReport(ctx, principal, in.TenderID)
 		if out == nil {
@@ -330,6 +335,12 @@ func destructiveTool(name, title, description string) *mcp.Tool {
 	return &mcp.Tool{Name: name, Title: title, Description: description, Annotations: &mcp.ToolAnnotations{Title: title, ReadOnlyHint: false, IdempotentHint: true, OpenWorldHint: boolPtr(false), DestructiveHint: boolPtr(true)}}
 }
 func boolPtr(v bool) *bool { return &v }
+func valueOrNone[T any](p *T) any {
+	if p == nil {
+		return "omitted"
+	}
+	return *p
+}
 func md(text string) *mcp.CallToolResult {
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -342,7 +353,7 @@ func confirmationState(v any) string {
 	return hex.EncodeToString(sum[:])
 }
 func confirmationRequest(message, state string) *mcp.CallToolResult {
-	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{"confirm": &mcp.ElicitParams{Message: message, RequestedSchema: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"confirm": {Type: "boolean", Description: "Set true only after reviewing the global template change."}}, Required: []string{"confirm"}}}}, RequestState: state}
+	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{"confirm": &mcp.ElicitParams{Message: message, RequestedSchema: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"confirm": {Type: "boolean", Description: "Set true only after reviewing the proposed change."}}, Required: []string{"confirm"}}}}, RequestState: state}
 }
 func confirmed(req *mcp.CallToolRequest, state string) bool {
 	if req.Params.RequestState != state {

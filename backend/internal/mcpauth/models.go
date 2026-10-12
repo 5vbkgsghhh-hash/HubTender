@@ -3,20 +3,34 @@ package mcpauth
 import "time"
 
 const (
-	ScopeTendersRead    = "tenders:read"
-	ScopeArchiveRead    = "archive:read"
-	ScopeLibraryRead    = "library:read"
-	ScopePricingDraft   = "pricing:draft"
-	ScopePricingApply   = "pricing:apply"
-	ScopeTemplatesWrite = "templates:write"
+	ScopeTendersRead        = "tenders:read"
+	ScopeArchiveRead        = "archive:read"
+	ScopeLibraryRead        = "library:read"
+	ScopePricingWrite       = "pricing:write"
+	ScopeNomenclatureCreate = "nomenclature:create"
+	ScopeLibraryCreate      = "library:create"
+	ScopeTemplatesWrite     = "templates:write"
 )
+
+// CurrentScopes is the engineer-facing default published in OAuth discovery
+// and used for new DCR clients. Template writes require explicit registration
+// by an allowed senior role. Old draft/apply grants do not authorize direct writes.
+var CurrentScopes = []string{
+	ScopeTendersRead,
+	ScopeArchiveRead,
+	ScopeLibraryRead,
+	ScopePricingWrite,
+	ScopeNomenclatureCreate,
+	ScopeLibraryCreate,
+}
 
 var AllScopes = []string{
 	ScopeTendersRead,
 	ScopeArchiveRead,
 	ScopeLibraryRead,
-	ScopePricingDraft,
-	ScopePricingApply,
+	ScopePricingWrite,
+	ScopeNomenclatureCreate,
+	ScopeLibraryCreate,
 	ScopeTemplatesWrite,
 }
 

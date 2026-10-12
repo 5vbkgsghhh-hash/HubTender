@@ -47,11 +47,12 @@ func (r *PricingRepo) GetPricingState(ctx context.Context, tenderID string, limi
 	err := r.pool.QueryRow(ctx, `
 		SELECT id::text,tender_number,title,client_name,version,is_archived,
 		       housing_class::text,construction_scope::text,submission_deadline,
-		       COALESCE(updated_at,created_at,now())
+		       COALESCE(updated_at,created_at,now()),COALESCE(financial_input_revision,0)
 		FROM public.tenders WHERE id=$1`, tenderID).Scan(
 		&state.Tender.ID, &state.Tender.TenderNumber, &state.Tender.Title, &state.Tender.ClientName,
 		&state.Tender.Version, &state.Tender.IsArchived, &state.Tender.HousingClass,
 		&state.Tender.ConstructionScope, &state.Tender.SubmissionDeadline, &state.Tender.UpdatedAt,
+		&state.FinancialInputRevision,
 	)
 	if err != nil {
 		return nil, err
@@ -174,6 +175,7 @@ func (r *PricingRepo) RawArchiveCandidates(ctx context.Context, in pricing.Archi
 		); err != nil {
 			return nil, err
 		}
+		c.SourceVersion = pricing.ArchiveSourceVersion(c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -211,6 +213,7 @@ func (r *PricingRepo) SearchLibrary(ctx context.Context, query, kind, unit strin
 			&c.ConsumptionCoefficient, &c.Confidence, &total); err != nil {
 			return nil, 0, err
 		}
+		c.SourceVersion = pricing.LibrarySourceVersion(c)
 		out = append(out, c)
 	}
 	return out, total, rows.Err()
@@ -298,7 +301,11 @@ func (r *PricingRepo) GetArchiveItem(ctx context.Context, id string) (*pricing.A
 }
 
 func (r *PricingRepo) RawArchiveCandidatesByID(ctx context.Context, id string) ([]pricing.ArchiveCandidate, error) {
-	rows, err := r.pool.Query(ctx, `
+	return rawArchiveCandidatesByID(ctx, r.pool, id)
+}
+
+func rawArchiveCandidatesByID(ctx context.Context, db pricingReadDB, id string) ([]pricing.ArchiveCandidate, error) {
+	rows, err := db.Query(ctx, `
 		SELECT bi.id::text,t.id::text,t.title,t.tender_number,t.version,t.is_archived,
 		       COALESCE(bi.quote_price_date::timestamptz,t.updated_at,t.created_at,now()),t.housing_class::text,t.construction_scope::text,
 		       cp.id::text,cp.work_name,COALESCE(wn.name,mn.name,bi.description,''),
@@ -331,26 +338,38 @@ func (r *PricingRepo) RawArchiveCandidatesByID(ctx context.Context, id string) (
 			&c.HistoricalRUBUnitRate, &c.RawSimilarity); err != nil {
 			return nil, err
 		}
+		c.SourceVersion = pricing.ArchiveSourceVersion(c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
 func (r *PricingRepo) GetLibraryItem(ctx context.Context, id, kind string) (*pricing.LibraryCandidate, error) {
+	return getLibraryPricingItem(ctx, r.pool, id, kind, false)
+}
+
+func getLibraryPricingItem(ctx context.Context, db pricingReadDB, id, kind string, lock bool) (*pricing.LibraryCandidate, error) {
+	workLock, materialLock := "", ""
+	if lock {
+		workLock = " FOR SHARE OF wl,wn NOWAIT"
+		materialLock = " FOR SHARE OF ml,mn NOWAIT"
+	}
 	var c pricing.LibraryCandidate
 	if kind == "work" {
-		err := r.pool.QueryRow(ctx, `SELECT wl.id::text,'work',wn.name,wn.id::text,wn.unit,wl.item_type::text,NULL::text,wl.unit_rate,wl.currency_type::text,NULL::text,NULL::numeric,NULL::numeric,1::float8
-			FROM public.works_library wl JOIN public.work_names wn ON wn.id=wl.work_name_id WHERE wl.id=$1`, id).Scan(
+		err := db.QueryRow(ctx, `SELECT wl.id::text,'work',wn.name,wn.id::text,wn.unit,wl.item_type::text,NULL::text,wl.unit_rate,wl.currency_type::text,NULL::text,NULL::numeric,NULL::numeric,1::float8
+			FROM public.works_library wl JOIN public.work_names wn ON wn.id=wl.work_name_id WHERE wl.id=$1`+workLock, id).Scan(
 			&c.ID, &c.Kind, &c.Name, &c.NameID, &c.UnitCode, &c.ItemType, &c.MaterialType,
 			&c.UnitRate, &c.CurrencyType, &c.DeliveryPriceType, &c.DeliveryAmount,
 			&c.ConsumptionCoefficient, &c.Confidence)
+		c.SourceVersion = pricing.LibrarySourceVersion(c)
 		return &c, err
 	}
-	err := r.pool.QueryRow(ctx, `SELECT ml.id::text,'material',mn.name,mn.id::text,mn.unit,ml.item_type::text,ml.material_type::text,ml.unit_rate,ml.currency_type::text,ml.delivery_price_type::text,ml.delivery_amount,ml.consumption_coefficient,1::float8
-		FROM public.materials_library ml JOIN public.material_names mn ON mn.id=ml.material_name_id WHERE ml.id=$1`, id).Scan(
+	err := db.QueryRow(ctx, `SELECT ml.id::text,'material',mn.name,mn.id::text,mn.unit,ml.item_type::text,ml.material_type::text,ml.unit_rate,ml.currency_type::text,ml.delivery_price_type::text,ml.delivery_amount,ml.consumption_coefficient,1::float8
+		FROM public.materials_library ml JOIN public.material_names mn ON mn.id=ml.material_name_id WHERE ml.id=$1`+materialLock, id).Scan(
 		&c.ID, &c.Kind, &c.Name, &c.NameID, &c.UnitCode, &c.ItemType, &c.MaterialType,
 		&c.UnitRate, &c.CurrencyType, &c.DeliveryPriceType, &c.DeliveryAmount,
 		&c.ConsumptionCoefficient, &c.Confidence)
+	c.SourceVersion = pricing.LibrarySourceVersion(c)
 	return &c, err
 }
 
@@ -401,11 +420,11 @@ func (r *PricingRepo) GetPricingQA(ctx context.Context, tenderID string) (*prici
 	}
 	rows.Close()
 	if err := r.pool.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE pdo.match_level='review'),
+		SELECT count(*) FILTER (WHERE COALESCE(pdo.match_level,bps.direct_match_level)='review'),
 		       count(*) FILTER (WHERE (bps.source_date IS NOT NULL AND bps.source_date < now()-interval '180 days'))
 		FROM public.boq_item_pricing_sources bps
 		JOIN public.boq_items bi ON bi.id=bps.boq_item_id
-		JOIN public.pricing_draft_operations pdo ON pdo.id=bps.draft_operation_id
+		LEFT JOIN public.pricing_draft_operations pdo ON pdo.id=bps.draft_operation_id
 		WHERE bi.tender_id=$1`, tenderID).Scan(&report.WeakSourceCount, &report.StaleSourceCount); err != nil {
 		return nil, err
 	}

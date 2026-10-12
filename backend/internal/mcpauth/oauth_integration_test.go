@@ -40,14 +40,14 @@ func TestOAuthPKCERotationAndImmediateGrantRevoke(t *testing.T) {
 	issuer, key := testMCPIssuer(t)
 	repo := NewRepository(pool)
 	svc := NewService(repo, repository.NewUserRepo(pool), ServiceConfig{Issuer: issuer, CodeTTL: 5 * time.Minute, DCR: true})
-	client, err := svc.RegisterClient(ctx, "Integration Client", []string{"http://127.0.0.1:43210/callback"}, []string{ScopeTendersRead, ScopePricingDraft, ScopePricingApply}, "native")
+	client, err := svc.RegisterClient(ctx, "Integration Client", []string{"http://127.0.0.1:43210/callback"}, []string{ScopeTendersRead, ScopePricingWrite, ScopeNomenclatureCreate, ScopeLibraryCreate}, "native")
 	if err != nil {
 		t.Fatal(err)
 	}
 	verifier := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
-	redirect, err := svc.BeginAuthorization(ctx, oauthEvalUser, AuthorizationRequest{ClientID: client.ID, RedirectURI: client.RedirectURIs[0], Scope: ScopeTendersRead + " " + ScopePricingDraft + " " + ScopePricingApply, State: "state-1", CodeChallenge: challenge})
+	redirect, err := svc.BeginAuthorization(ctx, oauthEvalUser, AuthorizationRequest{ClientID: client.ID, RedirectURI: client.RedirectURIs[0], Scope: ScopeTendersRead + " " + ScopePricingWrite + " " + ScopeNomenclatureCreate + " " + ScopeLibraryCreate, State: "state-1", CodeChallenge: challenge})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestOAuthPKCERotationAndImmediateGrantRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if principal.ClientID != client.ID || !principal.HasScope(ScopePricingApply) {
+	if principal.ClientID != client.ID || !principal.HasScope(ScopePricingWrite) || !principal.HasScope(ScopeNomenclatureCreate) || !principal.HasScope(ScopeLibraryCreate) {
 		t.Fatalf("bad principal: %+v", principal)
 	}
 	if !svc.IsPrincipalActive(ctx, oauthEvalUser, client.ID) {
@@ -100,9 +100,9 @@ func seedOAuthUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO public.roles(code,name,allowed_pages) VALUES ('engineer','Инженер','["/positions"]') ON CONFLICT (code) DO NOTHING`, nil},
+		{`INSERT INTO public.roles(code,name,allowed_pages) VALUES ('engineer','Инженер','["/positions","/library"]') ON CONFLICT (code) DO NOTHING`, nil},
 		{`INSERT INTO auth.users(id,email) VALUES ($1,'oauth-eval@example.com') ON CONFLICT (id) DO NOTHING`, []any{oauthEvalUser}},
-		{`INSERT INTO public.users(id,full_name,email,access_status,access_enabled,role_code,allowed_pages) VALUES ($1,'OAuth Eval','oauth-eval@example.com','approved',true,'engineer','["/positions"]') ON CONFLICT (id) DO UPDATE SET access_status='approved',access_enabled=true`, []any{oauthEvalUser}},
+		{`INSERT INTO public.users(id,full_name,email,access_status,access_enabled,role_code,allowed_pages) VALUES ($1,'OAuth Eval','oauth-eval@example.com','approved',true,'engineer','["/positions","/library"]') ON CONFLICT (id) DO UPDATE SET access_status='approved',access_enabled=true`, []any{oauthEvalUser}},
 	}
 	for _, st := range statements {
 		if _, err := pool.Exec(ctx, st.sql, st.args...); err != nil {

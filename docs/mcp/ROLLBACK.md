@@ -2,11 +2,13 @@
 
 ## Immediate kill switch
 
-Set and restart the BFF:
+For a direct-pricing problem, set `MCP_WRITE_ENABLED=false` and restart the
+BFF; read-only MCP remains available. To disable MCP entirely, set:
 
 ```dotenv
 MCP_ENABLED=false
 MCP_WRITE_ENABLED=false
+MCP_CATALOG_WRITE_ENABLED=false
 MCP_TEMPLATE_WRITE_ENABLED=false
 MCP_DCR_ENABLED=false
 ```
@@ -27,11 +29,13 @@ and restore the previous nginx vhost after `nginx -t`.
 
 ## Database rollback policy
 
-The migration is additive. In production, leave its tables/indexes in place
+The migrations are additive. In production, leave their tables/indexes in place
 when disabling MCP so audit/provenance is retained. Do not drop
-`boq_item_pricing_sources`, draft events, or OAuth grants after real use.
+`boq_item_pricing_sources`, direct request keys, historical draft events, or
+OAuth grants after real use. A direct BOQ update can be reverted through the
+existing VOR audit rollback after checking for later edits; a newly created
+item can be deleted through the normal VOR action with its current ETag.
 
 Dropping MCP tables is permitted only on an empty/disposable staging database
 after confirming there are no applied drafts. There is intentionally no
 automated destructive down script in this package.
-

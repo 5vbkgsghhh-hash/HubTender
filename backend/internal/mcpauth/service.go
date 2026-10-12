@@ -91,7 +91,7 @@ func (s *Service) RegisterClient(ctx context.Context, name string, redirects, sc
 		}
 	}
 	if len(scopes) == 0 {
-		scopes = slices.Clone(AllScopes)
+		scopes = slices.Clone(CurrentScopes)
 	}
 	cleanScopes, err := validateKnownScopes(scopes)
 	if err != nil {
@@ -309,9 +309,12 @@ func (s *Service) currentUser(ctx context.Context, id string) (*user.User, error
 }
 
 func allowedScopes(u *user.User) []string {
-	out := []string{ScopeTendersRead, ScopeArchiveRead, ScopeLibraryRead, ScopePricingDraft, ScopePricingApply}
+	out := []string{ScopeTendersRead, ScopeArchiveRead, ScopeLibraryRead, ScopePricingWrite}
 	if !access.HasAccess(u.AllowedPages, "/positions") {
 		out = []string{ScopeTendersRead, ScopeArchiveRead, ScopeLibraryRead}
+	}
+	if slices.Contains([]string{"engineer", "veduschiy_inzhener", "administrator", "developer"}, u.RoleCode) && access.HasAccess(u.AllowedPages, "/library") {
+		out = append(out, ScopeNomenclatureCreate, ScopeLibraryCreate)
 	}
 	if slices.Contains([]string{"veduschiy_inzhener", "administrator", "developer"}, u.RoleCode) && access.HasAccess(u.AllowedPages, "/library/templates") {
 		out = append(out, ScopeTemplatesWrite)

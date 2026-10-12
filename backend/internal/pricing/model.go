@@ -1,7 +1,6 @@
 package pricing
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -49,14 +48,54 @@ type PositionPricingState struct {
 }
 
 type PricingState struct {
-	Tender           TenderSummary          `json:"tender"`
-	PositionCount    int                    `json:"position_count"`
-	ItemCount        int                    `json:"item_count"`
-	PricedItemCount  int                    `json:"priced_item_count"`
-	MissingRateCount int                    `json:"missing_rate_count"`
-	DirectTotal      float64                `json:"direct_total"`
-	Positions        []PositionPricingState `json:"positions"`
-	Pagination       Page                   `json:"pagination"`
+	Tender                 TenderSummary          `json:"tender"`
+	FinancialInputRevision int64                  `json:"financial_input_revision"`
+	PositionCount          int                    `json:"position_count"`
+	ItemCount              int                    `json:"item_count"`
+	PricedItemCount        int                    `json:"priced_item_count"`
+	MissingRateCount       int                    `json:"missing_rate_count"`
+	DirectTotal            float64                `json:"direct_total"`
+	Positions              []PositionPricingState `json:"positions"`
+	Pagination             Page                   `json:"pagination"`
+}
+
+// DirectPricingResult is a committed BOQ change. It has no draft lifecycle.
+type DirectPricingResult struct {
+	SourceVersion          string                 `json:"source_version,omitempty"`
+	Quantity               float64                `json:"quantity"`
+	ParentWorkItemID       *string                `json:"parent_work_item_id,omitempty"`
+	ConversionCoefficient  *float64               `json:"conversion_coefficient,omitempty"`
+	ConsumptionCoefficient *float64               `json:"consumption_coefficient,omitempty"`
+	LinkedMaterials        []LinkedMaterialResult `json:"linked_materials"`
+	RequestKey             string                 `json:"request_key"`
+	TenderID               string                 `json:"tender_id"`
+	PositionID             string                 `json:"position_id"`
+	ItemID                 string                 `json:"item_id"`
+	Action                 string                 `json:"action"`
+	SourceKind             string                 `json:"source_kind"`
+	SourceID               string                 `json:"source_id"`
+	UnitRate               float64                `json:"unit_rate"`
+	Currency               string                 `json:"currency"`
+	TotalAmount            float64                `json:"total_amount"`
+	ETag                   string                 `json:"etag"`
+	FinancialInputRevision int64                  `json:"financial_input_revision"`
+	Warnings               []string               `json:"warnings"`
+	Replayed               bool                   `json:"replayed"`
+}
+
+type LinkedMaterialResult struct {
+	ItemID      string  `json:"item_id"`
+	Quantity    float64 `json:"quantity"`
+	TotalAmount float64 `json:"total_amount"`
+	ETag        string  `json:"etag"`
+}
+
+type CostCategory struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Unit       string `json:"unit"`
+	Location   string `json:"location"`
+	CategoryID string `json:"cost_category_id"`
 }
 
 type ArchiveSearchInput struct {
@@ -72,6 +111,7 @@ type ArchiveSearchInput struct {
 }
 
 type ArchiveCandidate struct {
+	SourceVersion          string    `json:"source_version"`
 	ItemID                 string    `json:"item_id"`
 	TenderID               string    `json:"tender_id"`
 	TenderTitle            string    `json:"tender_title"`
@@ -111,6 +151,7 @@ type ArchiveCandidate struct {
 }
 
 type LibraryCandidate struct {
+	SourceVersion          string   `json:"source_version"`
 	ID                     string   `json:"id"`
 	Kind                   string   `json:"kind"`
 	Name                   string   `json:"name"`
@@ -183,6 +224,7 @@ type ProposedItem struct {
 }
 
 type SourceRef struct {
+	Version    string     `json:"version,omitempty"`
 	TenderID   *string    `json:"tender_id,omitempty"`
 	ItemID     *string    `json:"item_id,omitempty"`
 	TemplateID *string    `json:"template_id,omitempty"`
@@ -192,74 +234,20 @@ type SourceRef struct {
 	Date       *time.Time `json:"date,omitempty"`
 }
 
-type Draft struct {
-	ID             string           `json:"id"`
-	TenderID       string           `json:"tender_id"`
-	CreatedBy      string           `json:"created_by"`
-	Status         string           `json:"status"`
-	BaseRevision   time.Time        `json:"base_revision"`
-	ValidationHash *string          `json:"validation_hash,omitempty"`
-	Summary        json.RawMessage  `json:"summary"`
-	ValidatedAt    *time.Time       `json:"validated_at,omitempty"`
-	ExpiresAt      time.Time        `json:"expires_at"`
-	AppliedAt      *time.Time       `json:"applied_at,omitempty"`
-	CancelledAt    *time.Time       `json:"cancelled_at,omitempty"`
-	CreatedAt      time.Time        `json:"created_at"`
-	UpdatedAt      time.Time        `json:"updated_at"`
-	Operations     []DraftOperation `json:"operations,omitempty"`
-	Events         []DraftEvent     `json:"events,omitempty"`
-}
-
-type DraftOperation struct {
-	ID                string          `json:"id"`
-	DraftID           string          `json:"draft_id"`
-	Action            string          `json:"action"`
-	TargetPositionID  string          `json:"target_position_id"`
-	TargetItemID      *string         `json:"target_item_id,omitempty"`
-	ParentOperationID *string         `json:"parent_operation_id,omitempty"`
-	ExpectedETag      *string         `json:"expected_etag,omitempty"`
-	ProposedPayload   ProposedItem    `json:"proposed_payload"`
-	SourceKind        string          `json:"source_kind"`
-	SourceRef         SourceRef       `json:"source_ref"`
-	MatchLevel        string          `json:"match_level"`
-	Confidence        float64         `json:"confidence"`
-	Rationale         *string         `json:"rationale,omitempty"`
-	Warnings          []string        `json:"warnings"`
-	PositionOrder     int             `json:"position_order"`
-	CreatedAt         time.Time       `json:"created_at"`
-	RawPayload        json.RawMessage `json:"-"`
-}
-
-type DraftEvent struct {
-	EventType string          `json:"event_type"`
-	ActorID   string          `json:"actor_id"`
-	Details   json.RawMessage `json:"details"`
-	CreatedAt time.Time       `json:"created_at"`
-}
-
-type ValidationSummary struct {
-	DraftID             string    `json:"draft_id"`
-	Status              string    `json:"status"`
-	ValidationHash      string    `json:"validation_hash"`
-	OperationsCount     int       `json:"operations_count"`
-	CreateCount         int       `json:"create_count"`
-	UpdateCount         int       `json:"update_count"`
-	WarningsCount       int       `json:"warnings_count"`
-	BlockingErrors      []string  `json:"blocking_errors"`
-	BeforeDirectTotal   float64   `json:"before_direct_total"`
-	AfterDirectTotal    float64   `json:"after_direct_total"`
-	DeltaDirectTotal    float64   `json:"delta_direct_total"`
-	UnresolvedPositions int       `json:"unresolved_positions"`
-	ValidatedAt         time.Time `json:"validated_at"`
-}
-
-type ApplyResult struct {
-	DraftID           string    `json:"draft_id"`
-	Status            string    `json:"status"`
-	CreatedItems      int       `json:"created_items"`
-	UpdatedItems      int       `json:"updated_items"`
-	AffectedPositions []string  `json:"affected_positions"`
-	AppliedAt         time.Time `json:"applied_at"`
+type DirectOperation struct {
+	ID               string       `json:"id"`
+	Action           string       `json:"action"`
+	TargetPositionID string       `json:"target_position_id"`
+	TargetItemID     *string      `json:"target_item_id,omitempty"`
+	ExpectedETag     *string      `json:"expected_etag,omitempty"`
+	ProposedPayload  ProposedItem `json:"proposed_payload"`
+	SourceKind       string       `json:"source_kind"`
+	SourceRef        SourceRef    `json:"source_ref"`
+	MatchLevel       string       `json:"match_level"`
+	Confidence       float64      `json:"confidence"`
+	Rationale        *string      `json:"rationale,omitempty"`
+	Warnings         []string     `json:"warnings"`
+	PositionOrder    int          `json:"position_order"`
 }
 
 type QAReport struct {

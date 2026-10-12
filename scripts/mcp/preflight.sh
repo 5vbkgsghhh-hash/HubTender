@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-EXPECTED_BASE="${EXPECTED_BASE_COMMIT:-6cbfa9bcd6ca491f7daaa94347d88d2b7236f31f}"
+EXPECTED_BASE="${EXPECTED_BASE_COMMIT:-2b2e8674b90e7d3f522db6f5d608ecc630360ffe}"
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 git cat-file -e "${EXPECTED_BASE}^{commit}"
