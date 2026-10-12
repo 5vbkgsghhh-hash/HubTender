@@ -5,7 +5,7 @@
 #
 #   bash scripts/readiness/run-live-ai-gate.sh
 #
-# Ключ: OPENROUTER_API_KEY читается из .env.prod ЛОКАЛЬНО в переменную и
+# Ключ: OPENROUTER_API_KEY читается из .env ЛОКАЛЬНО в переменную и
 # НИКОГДА не печатается (никакого set -x; все echo — только статусы).
 # Артефакты (redacted JSON для отчёта приёмки): $LIVE_GATE_OUT (обязателен).
 set -euo pipefail
@@ -29,8 +29,11 @@ command -v cygpath >/dev/null 2>&1 && TMP="$(cygpath -m "$TMP")"
 BACKEND_PID=""
 
 # ── Ключ: только в переменную, ни одного echo ────────────────────────────────
-OR_KEY="$(grep -m1 '^OPENROUTER_API_KEY=' .env.prod | cut -d= -f2- | tr -d '\r"' || true)"
-[[ -n "$OR_KEY" ]] || { echo "GATE FAILED: OPENROUTER_API_KEY не найден в .env.prod" >&2; exit 1; }
+# Один env-файл — .env; устаревший .env.prod читается, только если ещё лежит рядом.
+ENV_FILE=.env
+[[ -f .env.prod ]] && ENV_FILE=.env.prod
+OR_KEY="$(grep -m1 '^OPENROUTER_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r"' || true)"
+[[ -n "$OR_KEY" ]] || { echo "GATE FAILED: OPENROUTER_API_KEY не найден в $ENV_FILE" >&2; exit 1; }
 
 cleanup() {
   local rc=$?

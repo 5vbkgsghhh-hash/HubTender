@@ -12,7 +12,7 @@
 # Env-флаги:
 #   SKIP_VERIFY=1        пропустить health-checks
 #   FRONTEND_NPM_CI=1    принудительный npm ci (по умолчанию — только если нет node_modules)
-#   BUILD_CLEAN_HARD=1   git clean -fdx (СМЕТЁТ node_modules и .env.production.yandex)
+#   BUILD_CLEAN_HARD=1   git clean -fdx (СМЕТЁТ node_modules)
 #   HUBTENDER_REMOTE     по умолчанию origin
 #   HUBTENDER_BRANCH     по умолчанию main
 
@@ -20,8 +20,10 @@ set -euo pipefail
 
 readonly BUILD_DIR=/opt/hubtender-build
 readonly SITE_DIR=/srv/sites/tender.su10.ru
+# Единственный env-файл сервера: ключи бэкенда и VITE_* для сборки фронта.
 readonly BACKEND_ENV="$SITE_DIR/server/.env.prod"
-readonly FRONTEND_ENV="$BUILD_DIR/.env.production.yandex"
+# Устаревший отдельный env фронта: читается Vite, только если ещё лежит рядом.
+readonly LEGACY_FRONTEND_ENV="$BUILD_DIR/.env.production.yandex"
 readonly DB_CA="$SITE_DIR/.certs/yandex-ca.pem"
 readonly IMAGE=hubtender-api:prod
 readonly SERVICE=hubtender-bff.service
@@ -55,6 +57,19 @@ Env: SKIP_VERIFY, FRONTEND_NPM_CI, BUILD_CLEAN_HARD,
 EOF
 }
 
+# VITE_* для сборки фронта: из $BACKEND_ENV; отдельный файл — только как
+# устаревший запасной вариант, чтобы первый деплой после переезда не упал.
+check_frontend_env() {
+  if grep -q '^VITE_API_URL=' "$BACKEND_ENV"; then
+    ok "frontend env: VITE_* в $BACKEND_ENV"
+    [ ! -f "$LEGACY_FRONTEND_ENV" ] || warn "$LEGACY_FRONTEND_ENV больше не нужен — удали его"
+  elif [ -f "$LEGACY_FRONTEND_ENV" ]; then
+    warn "VITE_* лежат в $LEGACY_FRONTEND_ENV — перенеси VITE_API_URL и VITE_API_REALTIME_ENABLED в $BACKEND_ENV и удали файл"
+  else
+    fail "нет VITE_API_URL — добавь VITE_API_URL и VITE_API_REALTIME_ENABLED в $BACKEND_ENV"
+  fi
+}
+
 preflight() {
   log "preflight"
 
@@ -68,11 +83,10 @@ preflight() {
   [ -d "$BUILD_DIR/.git" ] || fail "$BUILD_DIR не git-репозиторий"
   ok "git-репозиторий найден"
 
-  [ -f "$BACKEND_ENV" ] || fail "нет backend env: $BACKEND_ENV"
-  ok "backend env: $BACKEND_ENV"
+  [ -f "$BACKEND_ENV" ] || fail "нет env: $BACKEND_ENV"
+  ok "env: $BACKEND_ENV"
 
-  [ -f "$FRONTEND_ENV" ] || fail "нет frontend env: $FRONTEND_ENV (создай вручную из .env.production.yandex.example)"
-  ok "frontend env: $FRONTEND_ENV"
+  check_frontend_env
 
   [ -f "$DB_CA" ] || warn "не найден сертификат БД: $DB_CA (проверь DATABASE_URL sslrootcert)"
 
@@ -96,10 +110,10 @@ git_sync() {
   git checkout -f -B "$BRANCH" "$REMOTE/$BRANCH"
   git reset --hard "$REMOTE/$BRANCH"
   if [ "${BUILD_CLEAN_HARD:-0}" = "1" ]; then
-    warn "BUILD_CLEAN_HARD=1 → git clean -fdx (сметёт node_modules и .env.production.yandex)"
+    warn "BUILD_CLEAN_HARD=1 → git clean -fdx (сметёт node_modules)"
     git clean -fdx
-    # .env.production.yandex обязателен — если снесли, восстанавливать вручную.
-    [ -f "$FRONTEND_ENV" ] || fail "после clean -fdx нет $FRONTEND_ENV — восстанови вручную"
+    # clean -fdx сносит и устаревший .env.production.yandex — VITE_* должны быть в $BACKEND_ENV.
+    check_frontend_env
   else
     git clean -fd
   fi
@@ -164,12 +178,11 @@ deploy_frontend() {
     log "node_modules уже есть, пропускаю npm ci (форсируй FRONTEND_NPM_CI=1)"
   fi
 
-  log "загрузка SENTRY_AUTH_TOKEN/ORG/PROJECT из $BACKEND_ENV"
+  log "загрузка VITE_* и SENTRY_AUTH_TOKEN из $BACKEND_ENV"
   set -a
   # shellcheck disable=SC1090
   . "$BACKEND_ENV"
   set +a
-  export SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT
   [ -n "${SENTRY_AUTH_TOKEN:-}" ] || warn "SENTRY_AUTH_TOKEN пуст — source maps не уйдут в Sentry"
 
   # Память: Vite-сборка с sourcemap в фазе rendering chunks легко съедает 1.5–3 ГБ.

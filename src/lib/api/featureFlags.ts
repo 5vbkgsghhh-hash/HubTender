@@ -1,38 +1,4 @@
-// Feature flags for Go BFF API.
-// VITE_API_MODE=supabase|go|hybrid (default: supabase)
-// Per-domain flags: VITE_API_<DOMAIN>_ENABLED=true overrides the global mode.
-
-type ApiDomain =
-  | 'references'
-  | 'tenders'
-  | 'positions'
-  | 'boq'
-  | 'markup'
-  | 'costs'
-  | 'fi'
-  | 'timeline'
-  | 'projects'
-  | 'notifications'
-  | 'users'
-  | 'redistributions'
-  | 'insurance'
-  | 'positionFilters'
-  | 'tenderRegistry'
-  | 'nomenclatures'
-  | 'importLog'
-  | 'userAdmin';
-
-const API_MODE = (import.meta.env.VITE_API_MODE ?? 'supabase') as 'supabase' | 'go' | 'hybrid';
-
-const domainEnvKey = (domain: ApiDomain) =>
-  `VITE_API_${domain.toUpperCase()}_ENABLED`;
-
-// Returns true when the Go BFF should be used for this domain.
-export function isGoEnabled(domain: ApiDomain): boolean {
-  const envVal = import.meta.env[domainEnvKey(domain)];
-  if (envVal !== undefined) return envVal === 'true';
-  return API_MODE === 'go';
-}
+// Go BFF API: base URL and realtime flag.
 
 function resolveApiBaseUrl(): string {
   const envUrl = import.meta.env.VITE_API_URL as string | undefined;

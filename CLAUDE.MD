@@ -43,7 +43,7 @@ curl http://localhost:3005/health/db  # readiness + пинг БД
 
 ### Секреты не должны начинаться с VITE_
 Vite инлайнит каждую `VITE_*`-переменную в клиентский бандл. НИКОГДА не добавляй префикс `VITE_` к секрету:
-- ✅ `VITE_API_URL`, `VITE_API_*_ENABLED`, `VITE_SENTRY_DSN` (rate-limited public key)
+- ✅ `VITE_API_URL`, `VITE_API_REALTIME_ENABLED`, `VITE_SENTRY_DSN` (rate-limited public key)
 - ❌ `APP_JWT_PRIVATE_KEY_*`, `VITE_DATABASE_URL`, `SMTP_PASSWORD`, любой пароль БД или JWT signing key
 - Серверные переменные (dev-скрипты в `scripts/`, Go-бэкенд) используют обычные имена: `DATABASE_URL`, `APP_JWT_PRIVATE_KEY_PATH`, `SMTP_PASSWORD` и т.д.
 - Шаблон — в `.env.example`.
@@ -97,7 +97,7 @@ import type { Tender } from '../lib/supabase/types';
 
 Доменные хелперы (каждый экспортирует обычные async-функции):
 - `src/lib/api/client.ts` — низкоуровневый `apiFetch<T>(path, opts)` с app JWT
-- `src/lib/api/featureFlags.ts` — `isGoEnabled(domain)` и `isRealtimeEnabled()`
+- `src/lib/api/featureFlags.ts` — `API_BASE_URL` и `isRealtimeEnabled()`
 - `src/lib/api/tenders.ts` — `fetchTenders`, `fetchTendersByIds`
 - `src/lib/api/positions.ts` — `fetchPositionsWithCosts`
 - `src/lib/api/boq.ts` — `bulkUpdateCommercial`
@@ -105,7 +105,7 @@ import type { Tender } from '../lib/supabase/types';
 - `src/lib/api/timeline.ts` — `setTenderGroupQuality`, `respondTenderIteration`
 - `src/lib/api/hooks/useApiReferences.ts` — 6 read-only хуков для справочников
 
-По-доменные env-флаги в проде включены (`VITE_API_*_ENABLED=true`), Supabase-фолбэков больше нет. Глобальный оверрайд: `VITE_API_MODE=go|hybrid`.
+Supabase-фолбэков больше нет: все домены идут через Go BFF безусловно. `VITE_API_MODE` и по-доменные `VITE_API_<DOMAIN>_ENABLED` удалены — код их не читает.
 
 ### Realtime (WebSocket-хаб)
 Go BFF гоняет Postgres `LISTEN/NOTIFY` → WebSocket-брокер (дебаунс 200 мс на топик). Фронтовый хук: `src/lib/realtime/useRealtimeTopic(topic, handler)`. Топики: `notifications:<user_id>`, `tender:<tender_id>`, `tenders`. Изменения в `boq_items`, `client_positions`, `cost_redistribution_results` и `construction_cost_volumes` веером расходятся в соответствующий `tender:<id>`; `tenders` рассылается наряду с per-tender-топиком при тендер-левел изменениях. Публикации неблокирующие — медленные клиенты дропаются, когда у них заполняется send-буфер (с логом). Слушатель pg авто-переподключается с экспоненциальным backoff (500 мс → 30 с).

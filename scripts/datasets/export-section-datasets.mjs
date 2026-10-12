@@ -13,7 +13,7 @@
 // Никогда не печатает DSN/секреты — только host/db и агрегаты.
 //
 // Запуск:  node scripts/datasets/export-section-datasets.mjs [--out <path.xlsx>]
-// Env:     DATABASE_URL берётся литерально из .env.prod, CA — .certs/yandex-ca.pem.
+// Env:     DATABASE_URL берётся литерально из .env, CA — .certs/yandex-ca.pem.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,7 +26,9 @@ const { Client } = pg;
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CA_PATH = path.join(REPO, '.certs/yandex-ca.pem');
-const ENV_PATH = path.join(REPO, '.env.prod');
+// Один env-файл — .env; устаревший .env.prod читается, только если ещё лежит рядом.
+const LEGACY_ENV_PATH = path.join(REPO, '.env.prod');
+const ENV_PATH = fs.existsSync(LEGACY_ENV_PATH) ? LEGACY_ENV_PATH : path.join(REPO, '.env');
 
 /** Разделы: имя листа ↔ точное имя в public.cost_categories. */
 const SECTIONS = [
@@ -96,7 +98,7 @@ const WORK_TYPES = new Set(['раб', 'суб-раб', 'раб-комп.']);
 
 // ---------------------------------------------------------------- подключение
 
-// Читаем DSN ЛИТЕРАЛЬНО из .env.prod: значение содержит `&`, ломающий
+// Читаем DSN ЛИТЕРАЛЬНО из env-файла: значение содержит `&`, ломающий
 // shell-sourcing, а в окружении может висеть унаследованный DATABASE_URL.
 function readDsnFromEnvFile(file) {
   for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {

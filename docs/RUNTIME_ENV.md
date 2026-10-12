@@ -1,19 +1,24 @@
 # Runtime environment
 
 Какие переменные нужны для запуска и где они живут. Реальные значения
-**не в git** — только шаблоны `.env.example`.
+**не в git** — только шаблон `.env.example`.
+
+**Один env-файл на машину.** На рабочей машине — `.env` в корне репо (фронтенд,
+бэкенд, скрипты). На prod-сервере — `/srv/sites/tender.su10.ru/server/.env.prod`
+(бэкенд и `VITE_*` для сборки фронта). Файлы `.env.local`, `.env.prod` в корне репо
+и `.env.production.yandex` больше не нужны; скрипты читают их, только если они ещё
+лежат рядом.
 
 ## Frontend (Vite)
 
-Бандл собирается из `.env.production.yandex` через
-`npx vite build --mode production.yandex`.
+Бандл собирается командой `npm run build:prod` (`vite build --mode production.yandex`).
+`VITE_*` берутся из окружения процесса: `deploy-server.sh` перед сборкой загружает
+`server/.env.prod`. Без `VITE_API_URL` или с адресом на localhost сборка не стартует.
 
 | Переменная | Значение (prod) | Где |
 |---|---|---|
 | `VITE_API_URL` | `https://tender.su10.ru` | inline в bundle |
-| `VITE_API_MODE` | `go` | inline (Vite constant-fold) |
 | `VITE_API_REALTIME_ENABLED` | `true` | inline |
-| `VITE_API_<DOMAIN>_ENABLED` × 18 | все `true` | inline |
 | `VITE_SENTRY_DSN` / `VITE_SENTRY_ENVIRONMENT` / `VITE_SENTRY_RELEASE` | Sentry frontend error tracking | inline |
 
 **Никаких VITE_*-секретов.** Vite встраивает `VITE_*` в клиентский бандл —
@@ -24,19 +29,19 @@ Supabase runtime удалён целиком — нет ни `supabase.auth.*`, 
 env-переменные (`VITE_AUTH_MODE`, `VITE_SUPABASE_URL`,
 `VITE_SUPABASE_PUBLISHABLE_KEY`) удалены.
 
-Шаблон: `.env.production.yandex.example` или `.env.example`.
+Шаблон: `.env.example`.
 
 ## Backend (Go BFF)
 
 Production env-файл живёт на prod-сервере: `/srv/sites/tender.su10.ru/server/.env.prod`
-(`chmod 600`, **вне git**). Local dev — `.env` в корне репо (тоже не в git).
+(`chmod 600`, **вне git**). Local dev — `scripts/dev-backend.ps1` грузит `.env` из
+корня репо (не в git). Сам бэкенд env-файлы не читает — только переменные процесса.
 
 | Переменная | Назначение | Production value (masked) |
 |---|---|---|
 | `DATABASE_URL` | DSN Yandex Managed PG | `postgres://…@<cluster>.mdb.yandexcloud.net:6432/HubTender?sslmode=verify-full&sslrootcert=/certs/yandex-ca.pem` |
 | `APP_JWT_ISSUER` | `iss`-claim, ставится на access tokens; равен публичному origin | `https://tender.su10.ru` |
 | `APP_JWT_AUDIENCE` | optional `aud`-claim | `hubtender-web` |
-| `APP_JWT_KEY_ID` | `kid` в JWKS | opaque string (rotate together with key) |
 | `APP_JWT_PRIVATE_KEY_PATH` или `_B64` | RSA private key для подписи RS256 JWT | mounted PEM file / base64 |
 | `APP_ACCESS_TOKEN_TTL_MINUTES` | TTL access-token | `15` |
 | `APP_REFRESH_TOKEN_TTL_DAYS` | TTL refresh-token | `30` |
@@ -83,6 +88,10 @@ Production env-файл живёт на prod-сервере: `/srv/sites/tender.
 | `VITE_AUTH_MODE` (frontend) | переключатель supabase/app для UI | удалена; UI всегда использует app-auth |
 | `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` (frontend) | конфиг supabase-js SDK | удалены вместе с SDK (см. doc 43) |
 | `SUPABASE_SERVICE_ROLE_KEY` | dev-скрипты, миграционные ETL | удалена вместе с миграционным архивом |
+| `VITE_API_MODE` (frontend) | переключатель supabase/go/hybrid | удалена; код её не читает, все домены идут через Go BFF |
+| `VITE_API_<DOMAIN>_ENABLED` × 18 (frontend) | по-доменное включение Go BFF | удалены вместе с `isGoEnabled()`; остался только `VITE_API_REALTIME_ENABLED` |
+| `APP_JWT_KEY_ID` (backend) | задумывалась как `kid` в JWKS | не действует: `kid` — JWK-thumbprint ключа, вычисляется при старте |
+| `SENTRY_ORG` / `SENTRY_PROJECT` (сборка) | параметры `@sentry/vite-plugin` | не читаются: org и project заданы в `vite.config.ts` |
 
 Миграционные переменные (`OLD_*`, `DUAL_RUN_*`, `ALLOW_*` и пр.) — см.
 git-историю (`archive/migrations/2026-05-db-cutover/`, удалено из рабочего дерева).
@@ -172,7 +181,7 @@ DATABASE_URL=... APP_JWT_ISSUER=... APP_JWT_PRIVATE_KEY_PATH=... CORS_ORIGINS=..
 |---|---|---|
 | `DATABASE_URL` (с паролем) | ❌ никогда | prod Yandex DSN |
 | `APP_JWT_PRIVATE_KEY_*` | ❌ никогда — компрометация = полный auth bypass | mounted PEM или base64 в `.env.prod` |
-| `APP_JWT_ISSUER` / `APP_JWT_AUDIENCE` / `APP_JWT_KEY_ID` | ✅ public (kid появляется в JWKS) | `https://tender.su10.ru` / `hubtender-web` |
+| `APP_JWT_ISSUER` / `APP_JWT_AUDIENCE` | ✅ public | `https://tender.su10.ru` / `hubtender-web` |
 | `SMTP_PASSWORD` / `SMTP_USER` | ❌ никогда | provider creds |
 | Yandex cluster ID (`rc1d-…` / `c-…`) | ⚠ внутренний идентификатор, не credential | в docs допустимо как reference |
 | Yandex CA PEM | ✅ public (downloads from Yandex docs) | `/certs/yandex-ca.pem` |

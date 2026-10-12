@@ -229,7 +229,7 @@ usage/cost ledger → emergency off → проверка manual fallback → rol
 Production workbook не используется.
 
 Полный сценарий автоматизирован: `LIVE_GATE_OUT=<каталог-артефактов>
-bash scripts/readiness/run-live-ai-gate.sh` (ключ читается из `.env.prod`
+bash scripts/readiness/run-live-ai-gate.sh` (ключ читается из `.env`
 локально и не печатается; БД — одноразовый docker-postgres). Результаты
 последнего прогона — [AI_PILOT_ACCEPTANCE_REPORT.md](AI_PILOT_ACCEPTANCE_REPORT.md).
 

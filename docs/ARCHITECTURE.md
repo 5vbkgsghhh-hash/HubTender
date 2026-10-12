@@ -101,7 +101,7 @@ App-auth only. Supabase Auth runtime полностью удалён.
    с reuse-detection: переиспользование старого refresh-токена ревокает
    всю семью).
 6. JWKS — `GET /.well-known/jwks.json` (опубликованный публичный ключ;
-   `kid` совпадает с `APP_JWT_KEY_ID`).
+   `kid` — JWK-thumbprint публичного ключа, вычисляется при старте).
 7. Sub-claim JWT = `auth.users.id` = `public.users.id`.
 8. Password recovery — `forgot-password` / `reset-password` /
    `change-password` через `app_auth.password_reset_tokens` + SMTP mailer.

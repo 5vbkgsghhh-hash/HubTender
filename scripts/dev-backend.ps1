@@ -144,7 +144,9 @@ function Start-DockerBackend {
 }
 
 Import-DotEnv (Join-Path $RepoRoot '.env')
-Import-DotEnv (Join-Path $RepoRoot '.env.prod')
+# Один env-файл — .env; устаревший .env.prod читается, только если ещё лежит рядом.
+$legacyEnv = Join-Path $RepoRoot '.env.prod'
+if (Test-Path $legacyEnv) { Import-DotEnv $legacyEnv }
 
 $required = @('DATABASE_URL', 'APP_JWT_ISSUER')
 foreach ($name in $required) {
