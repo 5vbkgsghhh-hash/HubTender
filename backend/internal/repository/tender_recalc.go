@@ -72,13 +72,17 @@ func RecalculateTenderGrandTotalTx(
 	}
 
 	// 1. Aggregated materialized commercial totals — EXACT decimal strings.
-	var materialTotal, workTotal string
+	//    The same pass also sums total_amount (прямые затраты, «ПЗ»): it is
+	//    persisted as tenders.cached_base_total so the tender list no longer
+	//    aggregates boq_items on every request (см. buildTenderListQuery).
+	var materialTotal, workTotal, baseTotal string
 	err := q.QueryRow(ctx, `
 		SELECT COALESCE(SUM(COALESCE(total_commercial_material_cost, 0)), 0)::text,
-		       COALESCE(SUM(COALESCE(total_commercial_work_cost, 0)), 0)::text
+		       COALESCE(SUM(COALESCE(total_commercial_work_cost, 0)), 0)::text,
+		       COALESCE(SUM(COALESCE(total_amount, 0)), 0)::text
 		FROM public.boq_items
 		WHERE tender_id = $1::uuid
-	`, tenderID).Scan(&materialTotal, &workTotal)
+	`, tenderID).Scan(&materialTotal, &workTotal, &baseTotal)
 	if err != nil {
 		return nil, fmt.Errorf("recalcTenderGrandTotalTx: aggregate: %w", err)
 	}
@@ -131,12 +135,15 @@ func RecalculateTenderGrandTotalTx(
 		return nil, fmt.Errorf("recalcTenderGrandTotalTx: tender %s: %w", tenderID, err)
 	}
 
-	// 4. Exact write of the canonical decimal string (never a float64 bind).
+	// 4. Exact write of the canonical decimal string (never a binary float bind).
+	//    cached_base_total is a plain SUM — written as the numeric::text it was
+	//    read as, no rounding of its own.
 	tag, err := q.Exec(ctx, `
 		UPDATE public.tenders
-		SET cached_grand_total = $1::numeric
+		SET cached_grand_total = $1::numeric,
+		    cached_base_total  = $3::numeric
 		WHERE id = $2::uuid
-	`, result.RoundedTotalDecimal, tenderID)
+	`, result.RoundedTotalDecimal, tenderID, baseTotal)
 	if err != nil {
 		return nil, fmt.Errorf("recalcTenderGrandTotalTx: update: %w", err)
 	}

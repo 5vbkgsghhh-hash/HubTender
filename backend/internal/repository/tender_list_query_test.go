@@ -68,3 +68,20 @@ func TestBuildTenderListQuery_ArgOrder(t *testing.T) {
 		t.Fatalf("LIMIT должен ссылаться на $4, запрос:\n%s", q)
 	}
 }
+
+// Регрессия 13.10.2026: base_total считался в списке коррелированным
+// подзапросом SUM(boq_items.total_amount) на каждый тендер — список зовут все
+// страницы и на каждое realtime-событие `tenders`, и серия записей в ВОР
+// забивала CPU базы копиями этого запроса (API отдавал 504 четырнадцать минут).
+// Сумма хранится в tenders.cached_base_total (пишет RecalculateTenderGrandTotalTx);
+// список обязан читать её и не трогать boq_items.
+func TestBuildTenderListQuery_BaseTotalIsStoredColumn(t *testing.T) {
+	q, _ := buildTenderListQuery(TenderListParams{})
+
+	if !strings.Contains(q, "cached_base_total AS base_total") {
+		t.Fatalf("base_total обязан читаться из tenders.cached_base_total, запрос:\n%s", q)
+	}
+	if strings.Contains(q, "boq_items") {
+		t.Fatalf("список тендеров не должен обращаться к boq_items, запрос:\n%s", q)
+	}
+}

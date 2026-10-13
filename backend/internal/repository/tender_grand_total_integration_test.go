@@ -79,6 +79,26 @@ func readCachedTotal(t *testing.T, pool *pgxpool.Pool, tenderID string) float64 
 	return v
 }
 
+func readCachedBaseTotal(t *testing.T, pool *pgxpool.Pool, tenderID string) string {
+	t.Helper()
+	var v string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT cached_base_total::text FROM public.tenders WHERE id=$1::uuid`, tenderID).Scan(&v); err != nil {
+		t.Fatalf("read base total: %v", err)
+	}
+	return v
+}
+
+func liveBaseTotal(t *testing.T, pool *pgxpool.Pool, tenderID string) string {
+	t.Helper()
+	var v string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COALESCE(SUM(COALESCE(total_amount,0)),0)::text FROM public.boq_items WHERE tender_id=$1::uuid`, tenderID).Scan(&v); err != nil {
+		t.Fatalf("live base total: %v", err)
+	}
+	return v
+}
+
 // runHelper recomputes via the canonical helper inside a committed tx.
 func runHelper(t *testing.T, pool *pgxpool.Pool, tenderID string) *calc.CachedTenderGrandTotalResult {
 	t.Helper()
@@ -491,5 +511,39 @@ func TestCachedGrandTotal_DecimalRoundingParity(t *testing.T) {
 				t.Fatalf("persisted = %q, want %q", persisted, tc.want)
 			}
 		})
+	}
+}
+
+
+// ─── cached_base_total: the helper persists SUM(total_amount) in the same write ─
+
+// The tender list reads tenders.cached_base_total instead of aggregating
+// boq_items per request; the helper is its only writer.
+func TestCachedBaseTotal_HelperPersistsSumOfTotalAmount(t *testing.T) {
+	pool := newTestPool(t)
+	f := seedCachedGrandTotalFixture(t, pool, "basetotal")
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE public.boq_items SET total_amount = 1234.5678 WHERE id=$1::uuid`, f.item1ID); err != nil {
+		t.Fatalf("update total_amount: %v", err)
+	}
+	runHelper(t, pool, f.tenderID)
+	want := liveBaseTotal(t, pool, f.tenderID)
+	if got := readCachedBaseTotal(t, pool, f.tenderID); got != want {
+		t.Fatalf("cached_base_total = %s, live SUM(total_amount) = %s", got, want)
+	}
+
+	// Rows removed → the stored total follows on the next helper run.
+	if _, err := pool.Exec(ctx, `DELETE FROM public.boq_items_audit WHERE boq_item_id=$1::uuid`, f.item1ID); err != nil {
+		t.Fatalf("delete audit: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM public.boq_items WHERE id=$1::uuid`, f.item1ID); err != nil {
+		t.Fatalf("delete item: %v", err)
+	}
+	runHelper(t, pool, f.tenderID)
+	want = liveBaseTotal(t, pool, f.tenderID)
+	if got := readCachedBaseTotal(t, pool, f.tenderID); got != want {
+		t.Fatalf("after delete: cached_base_total = %s, live = %s", got, want)
 	}
 }

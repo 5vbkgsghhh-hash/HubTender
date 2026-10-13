@@ -46,9 +46,9 @@ const Dashboard: React.FC = () => {
   const fetchTenders = async () => {
     setLoading(true);
     try {
-      // Активные тендеры + base_total (ПЗ = SUM(boq_items.total_amount),
-      // считается на лету в Go BFF скалярным подзапросом; убирает N
-      // batched-запросов к boq_items с фронта).
+      // Активные тендеры + base_total (ПЗ = SUM(boq_items.total_amount);
+      // Go BFF отдаёт хранимую tenders.cached_base_total — её обновляет
+      // серверный пересчёт итога тендера, фронт boq_items не запрашивает).
       const all = await apiFetchTenders();
       const data = all.filter((t: Tender) => !t.is_archived);
 

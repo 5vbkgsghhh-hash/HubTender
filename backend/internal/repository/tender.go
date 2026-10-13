@@ -120,6 +120,13 @@ func NewTenderRepo(pool *pgxpool.Pool) *TenderRepo {
 // buildTenderListQuery builds the ListTenders projection and its arguments.
 // Pure (no pool, no ctx) — so the financial projection is assertable without a
 // test database (tender_list_query_test.go).
+//
+// base_total (прямые затраты) читается из хранимой tenders.cached_base_total,
+// которую пишет RecalculateTenderGrandTotalTx. Считать её здесь подзапросом
+// SUM(boq_items.total_amount) НЕЛЬЗЯ: список зовут все страницы и на каждое
+// realtime-событие `tenders`, а подзапрос проходил все строки ВОР всех
+// тендеров (~700 тыс., 1,3–3 с на вызов) — 13.10.2026 серия записей в ВОР так
+// положила API на 14 минут.
 func buildTenderListQuery(p TenderListParams) (string, []any) {
 	args := []any{}
 	argN := 1
@@ -168,9 +175,7 @@ func buildTenderListQuery(p TenderListParams) (string, []any) {
 		       description,
 		       housing_class::text, construction_scope::text,
 		       is_archived, cached_grand_total,
-		       COALESCE((SELECT SUM(bi.total_amount)
-		                 FROM public.boq_items bi
-		                 WHERE bi.tender_id = tenders.id), 0) AS base_total,
+		       cached_base_total AS base_total,
 		       usd_rate, eur_rate, cny_rate,
 		       area_client, area_sp,
 		       submission_deadline::text,

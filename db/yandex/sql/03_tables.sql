@@ -160,6 +160,8 @@ CREATE TABLE IF NOT EXISTS public.tenders (
     is_archived boolean NOT NULL DEFAULT false,
     volume_title text DEFAULT 'Полный объём строительства'::text,
     cached_grand_total numeric NOT NULL DEFAULT 0,
+    -- SUM(boq_items.total_amount); пишет только Go helper RecalculateTenderGrandTotalTx
+    cached_base_total numeric NOT NULL DEFAULT 0,
     financial_approved boolean NOT NULL DEFAULT false,
     financial_approved_by uuid,
     financial_approved_at timestamp with time zone,
