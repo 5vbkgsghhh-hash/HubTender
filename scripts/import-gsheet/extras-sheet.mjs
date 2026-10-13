@@ -6,6 +6,9 @@ import { sheetAccess, findLabel, normLabel, colName } from './sheet.mjs';
 import { parseTenderName, parenthetical } from '../import-1c/tenders.mjs';
 import { FIXED_VALUES, GROUP_KEYS } from '../import-1c/extras-data.mjs';
 
+/** Лист с площадями и процентами наценок: «Анализ», в новых файлах — «Проценты наценок». */
+const analysisSheet = (wb) => sheetAccess(wb, wb.Sheets['Анализ'] ? 'Анализ' : 'Проценты наценок');
+
 /**
  * «213. Мосфильмовская 31А (Октябрь Групп).xlsx» + шапка «Расчета» + площади «Анализа».
  * opts.extras — книга с листом «Анализ», если он в отдельном файле; number/title/client —
@@ -16,7 +19,7 @@ export const parseHeader = (wb, file, { extras = wb, number, title, client } = {
   const parsed = parseTenderName(base);
   if (!parsed && !(number && title)) throw new Error(`имя файла «${base}»: в начале нет номера тендера («213. Название (Заказчик).xlsx»)`);
   const calc = sheetAccess(wb, 'Расчет');
-  const an = sheetAccess(extras, 'Анализ');
+  const an = analysisSheet(extras);
   const at = (s, re, to) => {
     const hit = findLabel(s, re, { to });
     if (!hit?.valueCol) return null;
@@ -45,7 +48,7 @@ export const parseHeader = (wb, file, { extras = wb, number, title, client } = {
 
 /** Подписи «Анализа» → ключи параметров наценок HUBTender. */
 export const MARKUP_LABELS = [
-  [/^работы$/, 'works_16_markup'],
+  [/^работы( 1,6)?$/, 'works_16_markup'],
   [/^служба механизации/, 'mechanization_service'],
   [/^мбп/, 'mbp_gsm'],
   [/^гарантийный период/, 'warranty_period'],
@@ -67,7 +70,7 @@ const MISSING = { subcontract_works_cost_growth: 0, subcontract_materials_cost_g
 
 /** Проценты «Анализа»: { found: {key: %}, unknown: [подписи с числом без соответствия] }. */
 export const parseMarkups = (wb) => {
-  const s = sheetAccess(wb, 'Анализ');
+  const s = analysisSheet(wb);
   const found = {};
   const unknown = [];
   for (let r = 1; r <= s.lastRow; r += 1) {

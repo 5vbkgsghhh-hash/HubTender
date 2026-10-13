@@ -11,6 +11,9 @@
 // Расчёт из нескольких файлов (209): --merge — все --file это части одного тендера по
 // порядку; --extras <xlsx> — файл с листами «Анализ» и «Затраты на строительство»;
 // --number, --title, --client — вместо выведенных из имени файла.
+// --extras-only — завести тендер только с процентами наценок и объёмами «Затрат на
+// строительство», без прямых затрат (позиции и строки не создаются).
+// --keep-on-fail — при сбое заполнения не удалять тендер (по умолчанию удаляется).
 //
 // Решения (out/): gs-cost-map.json {"Вид | Детализация | Локализация": id|null},
 // gs-units-map.json {items: {текст: код}, customer: {…}, byName: {"material|Наименование": код}},
@@ -26,7 +29,7 @@ import { buildUnitMap } from '../import-1c/units.mjs';
 import { canonKey } from '../import-1c/names.mjs';
 import { fillVersion } from '../import-1c/commit.mjs';
 import { detailLabel } from '../import-1c/costs.mjs';
-import { groupKeyExists } from '../import-1c/extras-data.mjs';
+import { groupKeyExists, growthByMajority, exclusionRows } from '../import-1c/extras-data.mjs';
 import { readWorkbook, sheetAccess } from './sheet.mjs';
 import { collectUnitTexts, parseCalcSheet, mergeParsed } from './calc-sheet.mjs';
 import { makeNameUnitOf } from './name-units.mjs';
@@ -36,6 +39,10 @@ import { renderReport } from './report.mjs';
 
 const TACTIC_NAME = 'Базовая схема';
 const NAME_CONCURRENCY = 6;
+/** Строк в одном запросе импорта: порции по ~1 200 строк упирались в таймаут nginx (504). */
+const IMPORT_CHUNK_ITEMS = 500;
+/** Пауза между порциями импорта (мс) — даёт серверу закончить автопересчёт тендера. */
+const IMPORT_PAUSE_MS = 3000;
 const DIR_1C_OUT = 'scripts/import-1c/out';
 
 const { values: args } = parseArgs({
@@ -47,6 +54,8 @@ const { values: args } = parseArgs({
     rollback: { type: 'string' },
     yes: { type: 'boolean', default: false },
     merge: { type: 'boolean', default: false },
+    'extras-only': { type: 'boolean', default: false },
+    'keep-on-fail': { type: 'boolean', default: false },
     extras: { type: 'string' },
     number: { type: 'string' },
     title: { type: 'string' },
@@ -156,13 +165,18 @@ const prepareFile = (files, refs, outDir) => {
   const missingUnits = [...usedUnits].filter((c) => !known.has(c));
 
   const blockers = [...parsed.blockers];
-  if (missingUnits.length && !args['create-units']) blockers.push(`единиц нет в справочнике: ${missingUnits.join(', ')} — запуск с --create-units заведёт их`);
-  if (parsed.unmappedCosts.size) blockers.push(`${parsed.unmappedCosts.size} видов затрат без сопоставления — решения в out/gs-cost-map.json`);
+  // Рост субподряда по «1» в «Интервале захода» (как в переносе из 1С): вид затрат получает
+  // рост работ, если помечена большая часть суммы его суб-раб; остальным рост отключается.
+  const growth = parsed.hasInterval ? { enabled: growthByMajority(parsed.growth, (id) => id).enabled } : null;
+  if (growth) growth.exclusions = exclusionRows(null, refs.details.map((d) => d.id), growth.enabled, new Set()).length;
+
+  if (!args['extras-only'] && missingUnits.length && !args['create-units']) blockers.push(`единиц нет в справочнике: ${missingUnits.join(', ')} — запуск с --create-units заведёт их`);
+  if (!args['extras-only'] && parsed.unmappedCosts.size) blockers.push(`${parsed.unmappedCosts.size} видов затрат без сопоставления — решения в out/gs-cost-map.json`);
   const taken = refs.tenders.filter((t) => t.tender_number === header.number);
   if (taken.length) blockers.push(`номер ${header.number} уже есть на портале: ${taken.map((t) => `v${t.version} «${t.title}»`).join(', ')}`);
   return {
     files, fileName: files.map((f) => path.basename(f)).join(' + '), header, parsed, markups, mv, volumes, names, missingNames, missingUnits,
-    unitReport: { items: itemMap.report, customer: custMap.report }, blockers,
+    unitReport: { items: itemMap.report, customer: custMap.report }, blockers, growth,
   };
 };
 
@@ -173,23 +187,26 @@ const applyFile = async (api, refs, prep, outDir) => {
   manifest.tenders[header.number] = entry;
   saveManifest(outDir, manifest);
 
-  if (prep.missingUnits.length) {
-    log(`Заводим единицы: ${prep.missingUnits.join(', ')}`);
-    await api.importUnits(prep.missingUnits.map((code) => ({ code, name: code, category: 'custom', sort_order: 999, is_active: true })));
-    entry.unitsCreated = prep.missingUnits;
-  }
-  log(`Создаю наименования: ${prep.missingNames.length}`);
-  await pool(prep.missingNames, NAME_CONCURRENCY, (n) => api.createName(n.kind, n.name, n.unit));
-  entry.namesCreated = prep.missingNames.length;
+  const extrasOnly = args['extras-only'];
   const nameIds = new Map(refs.nameIds);
-  for (const kind of ['work', 'material']) {
-    for (const n of await api.listNames(kind)) {
-      const k = canonKey(kind, n.name, n.unit);
-      if (!nameIds.has(k)) nameIds.set(k, n.id);
+  if (!extrasOnly) {
+    if (prep.missingUnits.length) {
+      log(`Заводим единицы: ${prep.missingUnits.join(', ')}`);
+      await api.importUnits(prep.missingUnits.map((code) => ({ code, name: code, category: 'custom', sort_order: 999, is_active: true })));
+      entry.unitsCreated = prep.missingUnits;
     }
+    log(`Создаю наименования: ${prep.missingNames.length}`);
+    await pool(prep.missingNames, NAME_CONCURRENCY, (n) => api.createName(n.kind, n.name, n.unit));
+    entry.namesCreated = prep.missingNames.length;
+    for (const kind of ['work', 'material']) {
+      for (const n of await api.listNames(kind)) {
+        const k = canonKey(kind, n.name, n.unit);
+        if (!nameIds.has(k)) nameIds.set(k, n.id);
+      }
+    }
+    const lost = [...prep.names.keys()].filter((k) => !nameIds.has(k));
+    if (lost.length) throw new Error(`после создания не найдено ${lost.length} наименований (пример: ${lost[0]})`);
   }
-  const lost = [...prep.names.keys()].filter((k) => !nameIds.has(k));
-  if (lost.length) throw new Error(`после создания не найдено ${lost.length} наименований (пример: ${lost[0]})`);
 
   const registryBefore = new Set((await api.listRegistry()).map((r) => r.id));
   const rate = (c) => header.rates[c] ?? undefined;
@@ -209,28 +226,42 @@ const applyFile = async (api, refs, prep, outDir) => {
   }
   log(`Тендер ${header.number} v1: ${created.id}`);
 
-  try {
-    entry.fill = await fillVersion({ api, tenderId: created.id, built: prep.parsed.built, nameIds, log, fileName: `${prep.fileName} (Google Таблицы)` });
-  } catch (err) {
-    entry.status = 'failed';
-    entry.error = err.message;
-    log(`  ✗ ${err.message} — удаляю тендер`);
-    await api.deleteTender(created.id).then(() => { entry.status = 'failed-deleted'; }).catch((e) => { entry.deleteError = e.message; });
+  if (!extrasOnly) {
+    try {
+      entry.fill = await fillVersion({ api, tenderId: created.id, built: prep.parsed.built, nameIds, log, fileName: `${prep.fileName} (Google Таблицы)`, chunkItems: IMPORT_CHUNK_ITEMS, pauseMs: IMPORT_PAUSE_MS });
+    } catch (err) {
+      entry.status = 'failed';
+      entry.error = err.message;
+      if (args['keep-on-fail']) {
+        // Удаление большого тендера сразу после сбоя добивает и без того занятую базу (13.10).
+        log(`  ✗ ${err.message} — тендер оставлен недогруженным, удалить: --rollback ${header.number} --yes`);
+      } else {
+        log(`  ✗ ${err.message} — удаляю тендер`);
+        await api.deleteTender(created.id).then(() => { entry.status = 'failed-deleted'; }).catch((e) => { entry.deleteError = e.message; });
+      }
+      saveManifest(outDir, manifest);
+      throw err;
+    }
     saveManifest(outDir, manifest);
-    throw err;
+    log(`  позиций ${entry.fill.positions}, строк ${entry.fill.inserted}, расхождений с сервером ${entry.fill.mismatchCount}`);
   }
-  saveManifest(outDir, manifest);
-  log(`  позиций ${entry.fill.positions}, строк ${entry.fill.inserted}, расхождений с сервером ${entry.fill.mismatchCount}`);
 
   await withRetry(() => api.putPercentages(created.id, refs.params.map((p) => ({ tender_id: created.id, markup_parameter_id: p.id, value: prep.mv.values[p.key] }))), { log });
   await withRetry(() => api.putTacticId(created.id, refs.tactic.id), { log });
+  if (prep.growth && !extrasOnly) {
+    const rows = exclusionRows(created.id, refs.details.map((d) => d.id), prep.growth.enabled, new Set());
+    await withRetry(() => api.insertExclusions(rows), { log });
+    entry.growth = { enabledWorks: prep.growth.enabled.size, enabledMaterials: 0, exclusions: rows.length };
+    log(`  рост субподряда: работы — ${prep.growth.enabled.size} видов затрат, исключений ${rows.length}`);
+  }
   for (const v of prep.volumes.rows) {
     await withRetry(() => api.upsertCostVolume({ tender_id: created.id, detail_cost_category_id: v.detail_cost_category_id, group_key: v.group_key, volume: v.volume, notes: v.notes }), { log });
   }
   entry.volumes = prep.volumes.rows.length;
-  entry.status = 'loaded';
+  entry.status = extrasOnly ? 'loaded-extras-only' : 'loaded';
   entry.finishedAt = new Date().toISOString();
   saveManifest(outDir, manifest);
+  if (extrasOnly) { log(`  без прямых затрат: проценты, тактика, объёмов ${entry.volumes}`); return; }
   const t = (await api.listTenders()).find((x) => x.id === created.id);
   log(`  Σ прямых затрат на портале ${t?.base_total} (ожидалось ${prep.parsed.stats.expected}); проценты, тактика, объёмов ${entry.volumes}`);
 };

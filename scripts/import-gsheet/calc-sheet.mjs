@@ -14,6 +14,8 @@
 // «ДОП» — доп. работа к строке заказчика выше, пустой ДОП-заголовок не грузится;
 // номер раздела с буквами («К6.1.2», «ГЛ.4.1.8») грузится как есть, уровень — по
 // числу частей через точку.
+// Тендер 256 (13.10): третий макет — первой идёт колонка «Интервал захода подряда на
+// площадку»; «1» у суб-раб копится по видам затрат для роста субподряда (как в 1С).
 
 import { materialQuantities } from '../import-1c/model.mjs';
 import { normLabel } from './sheet.mjs';
@@ -32,10 +34,14 @@ const NOT_IN_PRICE = 0.03;
 /** Сдвиг row_index у частей расчёта: «часть × 100000 + строка» (на сервере — только для сообщений). */
 const PART_ROWS = 100000;
 
+/** Колонки A…I, общие для первых двух макетов. */
+const COMMON_COLS = { interval: null, matType: 'B', kind: 'C', group: 'D', detail: 'E', location: 'F', clientQty: 'G', quote: 'H', name: 'I' };
+
 /**
  * Макеты листа: head — ожидаемые заголовки (колонка → шаблон), cols — роль → колонка.
- * A…I у макетов общие; во втором вместо «Характеристики» — «Ответственный сотрудник»
- * и «Комментарий», поэтому всё от «Ед. изм» сдвинуто на колонку вправо.
+ * Во втором вместо «Характеристики» — «Ответственный сотрудник» и «Комментарий», поэтому
+ * всё от «Ед. изм» сдвинуто на колонку вправо; в третьем перед всеми колонками добавлен
+ * «Интервал захода подряда на площадку» — сдвинуто всё.
  */
 const LAYOUTS = [
   {
@@ -47,7 +53,7 @@ const LAYOUTS = [
       W: /^итого/, X: /примечания заказчика/, Y: /примечания су-10/,
     },
     cols: {
-      itemNo: null, spec: 'J', unit: 'K', gpQty: 'L', coef: 'M', qty: 'N', workPrice: 'O', RUB: 'P', USD: 'Q', EUR: 'R', CNY: 'S',
+      ...COMMON_COLS, itemNo: null, spec: 'J', unit: 'K', gpQty: 'L', coef: 'M', qty: 'N', workPrice: 'O', RUB: 'P', USD: 'Q', EUR: 'R', CNY: 'S',
       choose: 'T', matPrice: 'V', total: 'W', clientNote: 'X', ownNote: 'Y',
     },
   },
@@ -60,8 +66,22 @@ const LAYOUTS = [
       X: /^итого/, Y: /примечания заказчика/, Z: /примечания су-10/,
     },
     cols: {
-      itemNo: 'A', spec: null, unit: 'L', gpQty: 'M', coef: 'N', qty: 'O', workPrice: 'P', RUB: 'Q', USD: 'R', EUR: 'S', CNY: 'T',
+      ...COMMON_COLS, itemNo: 'A', spec: null, unit: 'L', gpQty: 'M', coef: 'N', qty: 'O', workPrice: 'P', RUB: 'Q', USD: 'R', EUR: 'S', CNY: 'T',
       choose: 'U', matPrice: 'W', total: 'X', clientNote: 'Y', ownNote: 'Z',
+    },
+  },
+  {
+    head: {
+      A: /^интервал захода/, B: /^№ раздела/, C: /^тип материала/, D: /^наименование строки/, E: /вид работ/, F: /детализация/,
+      G: /локализация/, H: /кол-во заказчика/, I: /ссылка на кп/, J: /^наименование работ/,
+      K: /^ответственный/, L: /^комментарий/, M: /^ед\.? ?изм/, N: /кол-во гп/, O: /^коэф/, P: /^объем/, Q: /^цена работы/,
+      R: /^rub$/, S: /^usd$/, T: /^eur$/, U: /^cny$/, V: /^выбрать/, W: /^доставка/, X: /^цена мат/,
+      Y: /^итого/, Z: /примечания заказчика/, AA: /примечания су-10/,
+    },
+    cols: {
+      interval: 'A', itemNo: 'B', matType: 'C', kind: 'D', group: 'E', detail: 'F', location: 'G', clientQty: 'H', quote: 'I', name: 'J',
+      spec: null, unit: 'M', gpQty: 'N', coef: 'O', qty: 'P', workPrice: 'Q', RUB: 'R', USD: 'S', EUR: 'T', CNY: 'U',
+      choose: 'V', matPrice: 'X', total: 'Y', clientNote: 'Z', ownNote: 'AA',
     },
   },
 ];
@@ -81,7 +101,7 @@ export const checkLayout = (s) => {
     if (bad.length) throw new Error(`лист «Расчет»: другой макет колонок (${bad.join(', ')})`);
     return { header: r, cols: layout.cols };
   }
-  throw new Error('лист «Расчет»: не найдена строка заголовков («КОД» или «№ раздела» в колонке A)');
+  throw new Error('лист «Расчет»: не найдена строка заголовков («КОД», «№ раздела» или «Интервал захода…» в колонке A)');
 };
 
 /**
@@ -140,8 +160,8 @@ const assignLevels = (positions, itemCount, anomalies, rowLabel) => {
   });
 };
 
-const rowKind = (s, r) => {
-  const raw = s.raw('C', r);
+const rowKind = (s, col, r) => {
+  const raw = s.raw(col, r);
   if (raw === undefined || raw === null || String(raw).trim() === '') return null;
   const t = normLabel(raw);
   if (t === 'заказчик') return { kind: 'position' };
@@ -157,7 +177,7 @@ export const collectUnitTexts = (s) => {
   const items = new Map();
   const customer = new Map();
   for (let r = header + 1; r <= s.lastRow; r += 1) {
-    const k = rowKind(s, r);
+    const k = rowKind(s, cols.kind, r);
     const u = s.text(cols.unit, r);
     if (!k || !u || k.kind === 'separator') continue;
     const map = k.kind === 'item' ? items : customer;
@@ -199,13 +219,15 @@ export const parseCalcSheet = (s, ctx) => {
   const unitFills = [];
   const unmappedCosts = new Map();
   const costSplit = new Map();
+  const growth = new Map();
+  const visitOther = {};
   const st = {
     items: 0, works: 0, materials: 0, linked: 0, unlinked: 0, folded: 0, workFactor: 0, separators: 0, dops: 0, dopEmpty: 0,
     unitByName: 0, unitFallback: 0, unitDefault: 0, noCost: 0, sheetTotal: 0, expected: 0, types: {}, currencies: {}, delivery: {},
   };
   const rows = [];
   for (let r = header + 1; r <= s.lastRow; r += 1) {
-    const k = rowKind(s, r);
+    const k = rowKind(s, cols.kind, r);
     if (k) rows.push({ r, k });
   }
 
@@ -213,11 +235,11 @@ export const parseCalcSheet = (s, ctx) => {
   let workQty = new Map();
   const startPosition = (r, odd) => {
     const name = odd
-      ? [s.text('E', r), spec(r) ? `(${spec(r)})` : null].filter(Boolean).join(' ')
-      : s.text('I', r);
+      ? [s.text(cols.detail, r), spec(r) ? `(${spec(r)})` : null].filter(Boolean).join(' ')
+      : s.text(cols.name, r);
     positions.push({
       position_number: positions.length + 1, item_no: cols.itemNo ? itemNoOf(s, cols.itemNo, r) : null, work_name: name || '(без наименования)',
-      unit_code: ctx.customerUnitOf(s.text(cols.unit, r)), volume: num('G', r), client_note: join(spec(r), s.text(cols.clientNote, r)),
+      unit_code: ctx.customerUnitOf(s.text(cols.unit, r)), volume: num(cols.clientQty, r), client_note: join(spec(r), s.text(cols.clientNote, r)),
       hierarchy_level: 0, manual_volume: num(cols.gpQty, r), manual_note: s.text(cols.ownNote, r), row: r,
     });
     unit = { target: { kind: 'pos', index: positions.length - 1 }, items: [] };
@@ -229,14 +251,14 @@ export const parseCalcSheet = (s, ctx) => {
   const startDop = (r) => {
     const parent = positions.length - 1;
     const taken = dopNames.get(parent) ?? new Set();
-    const base = s.text('I', r) ?? 'ДОП';
+    const base = s.text(cols.name, r) ?? 'ДОП';
     let name = base;
     for (let n = 2; taken.has(name.toLowerCase()); n += 1) name = `${base} (${n})`;
     taken.add(name.toLowerCase());
     dopNames.set(parent, taken);
     dops.push({
       temp_id: ctx.part ? `dop${ctx.part}_${r}` : `dop_${r}`, parent_index: parent, work_name: name,
-      unit_code: ctx.customerUnitOf(s.text(cols.unit, r)), manual_volume: num(cols.gpQty, r) ?? num('G', r),
+      unit_code: ctx.customerUnitOf(s.text(cols.unit, r)), manual_volume: num(cols.gpQty, r) ?? num(cols.clientQty, r),
       manual_note: s.text(cols.ownNote, r), row: r,
     });
     unit = { target: { kind: 'dop', index: dops.length - 1 }, items: [] };
@@ -246,7 +268,7 @@ export const parseCalcSheet = (s, ctx) => {
 
   const addItem = (r, k) => {
     const head = unit.target.kind === 'dop' ? dops[unit.target.index] : positions[unit.target.index];
-    const name = s.text('I', r) ?? '(без наименования)';
+    const name = s.text(cols.name, r) ?? '(без наименования)';
     let unitCode = ctx.itemUnitOf(s.text(cols.unit, r));
     if (!unitCode) {
       const hit = ctx.nameUnitOf?.(k.itemKind, name) ?? null;
@@ -256,7 +278,7 @@ export const parseCalcSheet = (s, ctx) => {
       if (!unitCode) { unitCode = DEFAULT_UNIT; st.unitDefault += 1; how = join(how, 'по умолчанию'); }
       unitFills.push({ row: rowLabel(r), kind: k.itemKind, type: k.type, name, text: s.text(cols.unit, r), unit: unitCode, how, byName: Boolean(hit?.code) });
     }
-    const cost = ctx.costOf(s.text('D', r), s.text('E', r), s.text('F', r), name);
+    const cost = ctx.costOf(s.text(cols.group, r), s.text(cols.detail, r), s.text(cols.location, r), name);
     if (!cost.id) {
       st.noCost += 1;
       const e = unmappedCosts.get(cost.key) ?? { rows: 0, sample: r, ...cost };
@@ -271,7 +293,7 @@ export const parseCalcSheet = (s, ctx) => {
     const notes = [];
     const item = {
       kind: k.itemKind, boq_item_type: k.type, name, unit_code: unitCode, row_index: (ctx.part ?? 0) * PART_ROWS + r,
-      detail_cost_category_id: cost.id, quote_link: s.link('H', r) ?? s.text('H', r), quote_price_date: null,
+      detail_cost_category_id: cost.id, quote_link: s.link(cols.quote, r) ?? s.text(cols.quote, r), quote_price_date: null,
     };
     let calc;
     let price;
@@ -337,7 +359,7 @@ export const parseCalcSheet = (s, ctx) => {
         parent_work_temp_id: q.linked ? tempId(parentRow) : null, quantity: q.quantity, base_quantity: q.base_quantity,
         conversion_coefficient: q.conversion_coefficient, consumption_coefficient: q.consumption_coefficient,
         unit_rate: price, currency_type: cur, delivery_price_type: dw, delivery_amount: damount,
-        material_type: /^всп/i.test(s.text('B', r) ?? '') ? 'вспомогат.' : 'основн.',
+        material_type: /^всп/i.test(s.text(cols.matType, r) ?? '') ? 'вспомогат.' : 'основн.',
       });
       effQty = q.quantity === null ? 0 : (q.linked ? q.quantity : q.quantity * q.consumption_coefficient);
       const unitCost = price * (fx ?? 0) + (dw === 'не в цене' ? price * (fx ?? 0) * NOT_IN_PRICE : 0) + (dw === 'суммой' ? damount : 0);
@@ -387,6 +409,24 @@ export const parseCalcSheet = (s, ctx) => {
       st.expected += expected;
     }
     item.description = join(spec(r), s.text(cols.ownNote, r), ...notes);
+    if (cols.interval) {
+      // «1» в «Интервале захода»: по суб-раб копим суммы по виду затрат (рост субподряда,
+      // правило большинства — в load.mjs); «1» у прочих строк на портал не переносится.
+      const visit = num(cols.interval, r) === 1;
+      const amount = Math.abs(item.total_amount ?? 0);
+      if (k.type === 'суб-раб' && cost.id) {
+        const e = growth.get(cost.id) ?? { total: 0, flagged: 0, rows: 0, flaggedRows: 0 };
+        e.total += amount;
+        e.rows += 1;
+        if (visit) { e.flagged += amount; e.flaggedRows += 1; }
+        growth.set(cost.id, e);
+      } else if (visit) {
+        const o = (visitOther[k.type] ??= { rows: 0, sum: 0, details: {} });
+        o.rows += 1;
+        o.sum += amount;
+        if (cost.id) o.details[cost.id] = (o.details[cost.id] ?? 0) + 1;
+      }
+    }
     if (cost.split && cost.id) {
       // Статья, разнесённая по наименованию строки: суммы по видам затрат — в отчёт.
       const e = costSplit.get(`${cost.key}→${cost.id}`) ?? { text: cost.text, id: cost.id, rows: 0, sum: 0 };
@@ -403,31 +443,31 @@ export const parseCalcSheet = (s, ctx) => {
     if (k.kind === 'separator') {
       st.separators += 1;
       const no = cols.itemNo ? itemNoOf(s, cols.itemNo, r) : null;
-      if (no) anomalies.push({ row: rowLabel(r), name: s.text('I', r), reason: `разделитель с номером раздела «${no}» — удалён, его строки остались в позиции выше` });
+      if (no) anomalies.push({ row: rowLabel(r), name: s.text(cols.name, r), reason: `разделитель с номером раздела «${no}» — удалён, его строки остались в позиции выше` });
       return;
     }
     if (k.kind === 'dop') {
       const next = rows.slice(i + 1).find((x) => x.k.kind !== 'separator');
       if (!positions.length) {
-        anomalies.push({ row: rowLabel(r), name: s.text('I', r), reason: 'ДОП до первой позиции заказчика — пропущен' });
+        anomalies.push({ row: rowLabel(r), name: s.text(cols.name, r), reason: 'ДОП до первой позиции заказчика — пропущен' });
         unit = null;
       } else if (next?.k.kind !== 'item') {
         st.dopEmpty += 1;
-        anomalies.push({ row: rowLabel(r), name: s.text('I', r), reason: 'ДОП без строк (заголовок) — не загружен' });
+        anomalies.push({ row: rowLabel(r), name: s.text(cols.name, r), reason: 'ДОП без строк (заголовок) — не загружен' });
       } else startDop(r);
       return;
     }
     if (k.kind === 'odd') {
       const next = rows[i + 1];
       if (next?.k.kind === 'item') {
-        anomalies.push({ row: rowLabel(r), name: s.text('I', r), reason: `в «Наименование строки» значение «${k.value}», под строкой работы — загружено как позиция` });
+        anomalies.push({ row: rowLabel(r), name: s.text(cols.name, r), reason: `в «Наименование строки» значение «${k.value}», под строкой работы — загружено как позиция` });
         startPosition(r, true);
       } else {
-        anomalies.push({ row: rowLabel(r), name: s.text('I', r), reason: `в «Наименование строки» значение «${k.value}», строк под ней нет — пропущено` });
+        anomalies.push({ row: rowLabel(r), name: s.text(cols.name, r), reason: `в «Наименование строки» значение «${k.value}», строк под ней нет — пропущено` });
       }
       return;
     }
-    if (!unit) { anomalies.push({ row: rowLabel(r), name: s.text('I', r), reason: 'строка до первой позиции — пропущена' }); return; }
+    if (!unit) { anomalies.push({ row: rowLabel(r), name: s.text(cols.name, r), reason: 'строка до первой позиции — пропущена' }); return; }
     addItem(r, k);
   });
 
@@ -443,6 +483,7 @@ export const parseCalcSheet = (s, ctx) => {
   return {
     built: { positions, dops, units, stats: { amount1c: st.expected } },
     stats: st, zeroed, negatives, corrections, anomalies, blockers, unitFills, unmappedCosts, costSplit,
+    hasInterval: Boolean(cols.interval), growth, visitOther,
   };
 };
 
@@ -460,6 +501,8 @@ export const mergeParsed = (parts) => {
   const stats = {};
   const unmappedCosts = new Map();
   const costSplit = new Map();
+  const growth = new Map();
+  const visitOther = {};
   for (const p of parts) {
     const shift = positions.length;
     const dopShift = dops.length;
@@ -475,6 +518,8 @@ export const mergeParsed = (parts) => {
       const prev = costSplit.get(k);
       costSplit.set(k, prev ? { ...prev, rows: prev.rows + e.rows, sum: prev.sum + e.sum } : { ...e });
     }
+    for (const [k, e] of p.growth) growth.set(k, addStats(growth.get(k) ?? {}, e));
+    addStats(visitOther, p.visitOther);
   }
   stats.sheetTotal = round2(stats.sheetTotal);
   stats.expected = round2(stats.expected);
@@ -483,5 +528,6 @@ export const mergeParsed = (parts) => {
     built: { positions, dops, units, stats: { amount1c: stats.expected } },
     stats, partStats: parts.map((p) => p.stats), zeroed: all('zeroed'), negatives: all('negatives'), corrections: all('corrections'), anomalies: all('anomalies'),
     blockers: all('blockers'), unitFills: all('unitFills'), unmappedCosts, costSplit,
+    hasInterval: parts.some((p) => p.hasInterval), growth, visitOther,
   };
 };

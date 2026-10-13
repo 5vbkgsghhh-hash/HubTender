@@ -8,6 +8,9 @@ import { parseCalcSheet, collectUnitTexts, mergeParsed } from './calc-sheet.mjs'
 import { makeNameUnitOf } from './name-units.mjs';
 import { parseHeader, parseMarkups, buildMarkupValues, parseVolumes, makeGroupKeyOf } from './extras-sheet.mjs';
 import { costKey, makeCostOf } from './cost-map.mjs';
+import { growthByMajority, exclusionRows } from '../import-1c/extras-data.mjs';
+import { fillVersion } from '../import-1c/commit.mjs';
+import { nameKey } from '../import-1c/prepare.mjs';
 
 const cellOf = (x) => {
   if (x !== null && typeof x === 'object') return { t: typeof x.v === 'number' ? 'n' : 's', ...x };
@@ -422,4 +425,94 @@ test('Числа текстом, отрицательный итог, две в�
   assert.deepEqual([item(34).currency_type, item(34).unit_rate, item(34).total_amount], ['RUB', 2000, 2000]);
   assert.match(item(34).description, /Цены в нескольких валютах/);
   assert.deepEqual([res.corrections.length, res.blockers.length, res.stats.expected], [0, 0, 703166]);
+});
+
+// ─── Тендер 256: колонка «Интервал захода подряда на площадку», лист «Проценты наценок» ───
+
+const HEADER3 = {
+  A: 'Интервал захода подряда на площадку', B: '№ Раздела', C: 'Тип Материала\n(Основ/вспом)', D: 'Наименование строки',
+  E: 'Затраты на строительство Вид работ', F: 'Затраты на строительство Детализация вида работ', G: 'Локализация уточненная',
+  H: 'Кол-во Заказчика', I: 'Ссылка на КП', J: 'Наименование работ', K: 'Ответственный сотрудник', L: 'Комментарий', M: 'Ед. изм ',
+  N: 'кол-во ГП', O: 'Коэф. расхода мат-ла и работы', P: 'Объем работ/ материала', Q: 'Цена работы, руб за ед.', R: 'RUB', S: 'USD',
+  T: 'EUR', U: 'CNY', V: 'ВЫБРАТЬ', W: 'Доставка материала', X: 'Цена мат-ла с НДС, руб за ед.', Y: 'Итого', Z: 'Примечания Заказчика',
+  AA: 'Примечания СУ-10',
+};
+const art = (detail) => ({ E: 'Фасадные работы', F: detail, G: 'Нет' });
+const CALC4 = {
+  1: { O: 'Курс доллара', P: 100, Q: 'Курс евро', R: 104, S: 'Курс юаня', T: 14 },
+  5: { J: 'Вопросы', K: { v: '256 ВОПРОС-ОТВЕТ', l: { Target: 'https://q3' } } },
+  9: HEADER3,
+  12: { B: '1', D: 'Заказчик', J: 'Фасад' },
+  13: { B: '1.1.', D: 'Заказчик', J: 'НВФ', K: 'Иванов', L: 'корпус', M: 'м2', H: 10, N: 10, Z: 'прим. заказчика', AA: 'прим. СУ-10' },
+  14: { A: 1, ...art('НВФ'), D: 'суб-раб', J: 'Монтаж НВФ', M: 'м2', P: { v: 10, f: 'N13' }, Q: 100, Y: { v: 1000, f: 'P14*Q14' } },
+  15: { ...art('НВФ'), C: 'вспом', D: 'суб-мат', I: { v: 'КП.pdf', l: { Target: 'https://kp3' } }, J: 'Кассета', M: 'м2', O: 1.1,
+    P: { v: 11, f: 'P14*O15' }, R: 50, V: 'в цене', X: 50, Y: { v: 550, f: '(W15+X15)*P15' } },
+  16: { A: '1', ...art('НВФ'), D: 'суб-раб', J: 'Леса', M: 'м2', P: 10, Q: 20, Y: 200 },
+  17: { ...art('Мокрый'), D: 'суб-раб', J: 'Штукатурка', M: 'м2', P: 10, Q: 30, Y: 300 },
+  18: { A: 1, ...art('Мокрый'), D: 'суб-раб', J: 'Окраска', M: 'м2', P: 10, Q: 10, Y: 100 },
+  19: { A: 1, ...art('Двери'), D: 'раб', J: 'Монтаж двери', M: 'шт', P: 1, Q: 500, Y: 500 },
+  20: { A: 1, ...art('Двери'), D: 'мат', J: 'Дверь', M: 'шт', P: 1, R: 900, V: 'в цене', X: 900, Y: 900 },
+  21: { D: 'Разделитель', J: 'Этап', N: 5 },
+};
+const parse4 = (part) => parseCalcSheet(sheetAccess(book({ Расчет: CALC4 }), 'Расчет'), {
+  ...ctx(), rates: { USD: 100, EUR: 104, CNY: 14 }, costOf: (g, d) => ({ id: d, key: d, text: d, candidates: [] }), part,
+});
+
+test('Третий макет: колонка интервала сдвигает все столбцы', () => {
+  const res = parse4();
+  const { positions, units } = res.built;
+  assert.deepEqual(positions.map((p) => [p.item_no, p.hierarchy_level, p.work_name]), [['1', 0, 'Фасад'], ['1.1', 1, 'НВФ']]);
+  assert.deepEqual([positions[1].volume, positions[1].manual_volume, positions[1].unit_code, positions[1].client_note, positions[1].manual_note],
+    [10, 10, 'м2', 'прим. заказчика', 'прим. СУ-10']);
+  const item = (row) => units.flatMap((u) => u.items).find((x) => x.row_index === row);
+  assert.deepEqual([item(14).quantity, item(14).unit_rate, item(14).total_amount, item(14).detail_cost_category_id, item(14).description], [10, 100, 1000, 'НВФ', null]);
+  assert.deepEqual([item(15).parent_work_temp_id, item(15).quantity, item(15).consumption_coefficient, item(15).quote_link, item(15).material_type, item(15).total_amount],
+    ['w_14', 11, 1.1, 'https://kp3', 'вспомогат.', 550]);
+  assert.deepEqual([res.stats.items, res.stats.separators, res.stats.expected, res.hasInterval], [7, 1, 3550, true]);
+  assert.equal(parseCalcSheet(sheetAccess(book({ Расчет: CALC2 }), 'Расчет'), ctx()).hasInterval, false);
+});
+
+test('Интервал захода = 1: рост субподряда по большинству суммы суб-раб', () => {
+  const res = parse4();
+  assert.deepEqual([...res.growth.entries()], [
+    ['НВФ', { total: 1200, flagged: 1200, rows: 2, flaggedRows: 2 }], ['Мокрый', { total: 400, flagged: 100, rows: 2, flaggedRows: 1 }],
+  ]);
+  assert.deepEqual(res.visitOther, { 'раб': { rows: 1, sum: 500, details: { Двери: 1 } }, 'мат': { rows: 1, sum: 900, details: { Двери: 1 } } });
+  const { enabled } = growthByMajority(res.growth, (id) => id);
+  assert.deepEqual([...enabled], ['НВФ'], '«1» у меньшей части суммы и у собственных строк рост не включает');
+  assert.deepEqual(exclusionRows('t', ['НВФ', 'Мокрый', 'Двери'], enabled, new Set()).map((r) => `${r.exclusion_type}:${r.detail_cost_category_id}`),
+    ['works:Мокрый', 'works:Двери', 'materials:НВФ', 'materials:Мокрый', 'materials:Двери']);
+  const merged = mergeParsed([parse4(1), parse4(2)]);
+  assert.deepEqual([merged.growth.get('НВФ'), merged.visitOther['мат'].rows, merged.hasInterval],
+    [{ total: 2400, flagged: 2400, rows: 4, flaggedRows: 4 }, 2, true]);
+});
+
+test('Лист «Проценты наценок» вместо «Анализа», подпись «Работы 1,6»', () => {
+  const extras = book({
+    'Проценты наценок': {
+      4: { B: 'Площадь общая (по СП), м2', C: 105424 }, 5: { B: 'Площадь общая (от Заказчика), м2', C: 105424 },
+      9: { B: 'Работы 1,6', C: { v: 0.6, z: '0%' } }, 15: { B: 'Рост стоимости РАБОТ СУБПОДРЯДА', C: { v: 0, z: '0%' } },
+      21: { B: 'Прибыль субподряда', C: { v: 0.01, z: '0.00%' } },
+    },
+  });
+  const h = parseHeader(book({ Расчет: CALC4 }), '/x/Актуализация 256. Примавера К14 v2 Часть 1.xlsx', { extras, number: '256', title: 'ЖК Примавера К14', client: 'Спартак' });
+  assert.deepEqual([h.number, h.title, h.client, h.fields.area_sp, h.fields.qa_form_link], ['256', 'ЖК Примавера К14', 'Спартак', 105424, 'https://q3']);
+  assert.deepEqual(h.rates, { USD: 100, EUR: 104, CNY: 14 });
+  assert.deepEqual(parseMarkups(extras).found, { works_16_markup: 60, subcontract_works_cost_growth: 0, profit_subcontract: 1 });
+});
+
+test('Импорт порциями заданного размера: блок позиции не разрывается', async () => {
+  const built = parse3().built;
+  const nameIds = new Map(built.units.flatMap((u) => u.items).map((it) => [nameKey(it.kind, it.name, it.unit_code), `n-${it.row_index}`]));
+  const calls = [];
+  const api = {
+    bulkPositions: async () => {},
+    listPositions: async () => built.positions.map((p) => ({ id: `p${p.position_number}`, position_number: p.position_number, total_material: 0, total_works: 0 })),
+    importBoq: async (payload) => { calls.push(payload); return { inserted_items_count: payload.items.length }; },
+  };
+  const res = await fillVersion({ api, tenderId: 't', built, nameIds, log: () => {}, chunkItems: 3 });
+  assert.deepEqual(calls.map((c) => c.items.map((x) => x.row_index)), [[12, 15, 16], [19], [24, 25, 26]]);
+  assert.deepEqual(calls.map((c) => c.additional_positions.map((d) => d.temp_id)), [['dop_13'], ['dop_18'], []]);
+  assert.equal(calls[0].additional_positions[0].parent_position_id, 'p2');
+  assert.equal(res.inserted, 7);
 });

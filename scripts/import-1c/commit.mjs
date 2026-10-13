@@ -80,8 +80,13 @@ const toApiItem = (it, { positionId, dopTempId, nameIds }) => {
   };
 };
 
-/** Заполняет оболочку версии позициями, ДОП и строками; возвращает сверку. */
-export const fillVersion = async ({ api, tenderId, built, nameIds, log, fileName = FILE_NAME }) => {
+/**
+ * Заполняет оболочку версии позициями, ДОП и строками; возвращает сверку.
+ * chunkItems — предел строк в одном запросе импорта (блок позиции не разрывается).
+ * pauseMs — пауза между порциями: не меньше этого и не меньше времени самой порции (до 30 с),
+ * чтобы сервер успел закончить автопересчёт тендера; 0 — без паузы.
+ */
+export const fillVersion = async ({ api, tenderId, built, nameIds, log, fileName = FILE_NAME, chunkItems = IMPORT_CHUNK_ITEMS, pauseMs = 0 }) => {
   const rows = built.positions.map((p) => ({
     tender_id: tenderId,
     position_number: p.position_number,
@@ -119,7 +124,7 @@ export const fillVersion = async ({ api, tenderId, built, nameIds, log, fileName
       for (const it of unit.items) apiItems.push(toApiItem(it, { dopTempId: d.temp_id, nameIds }));
     }
     const size = JSON.stringify(apiItems).length + 400;
-    if (cur && (cur.bytes + size > IMPORT_CHUNK_BYTES || cur.items.length + apiItems.length > IMPORT_CHUNK_ITEMS)) flush();
+    if (cur && (cur.bytes + size > IMPORT_CHUNK_BYTES || cur.items.length + apiItems.length > chunkItems)) flush();
     cur ??= { items: [], position_updates: [], additional_positions: [], bytes: 0 };
     cur.items.push(...apiItems);
     if (extra.update) cur.position_updates.push(extra.update);
@@ -132,6 +137,7 @@ export const fillVersion = async ({ api, tenderId, built, nameIds, log, fileName
   let mismatchCount = 0;
   const mismatches = [];
   for (const [i, c] of chunks.entries()) {
+    const startedAt = Date.now();
     const res = await api.importBoq({
       tender_id: tenderId,
       file_name: fileName,
@@ -145,7 +151,11 @@ export const fillVersion = async ({ api, tenderId, built, nameIds, log, fileName
     inserted += res.inserted_items_count;
     mismatchCount += res.total_mismatch_count ?? 0;
     for (const m of res.total_mismatches ?? []) if (mismatches.length < 30) mismatches.push(m);
-    log(`    порция ${i + 1}/${chunks.length}: ${c.items.length} строк`);
+    const tookMs = Date.now() - startedAt;
+    log(`    порция ${i + 1}/${chunks.length}: ${c.items.length} строк, ${(tookMs / 1000).toFixed(1)} с`);
+    if (pauseMs > 0 && i < chunks.length - 1) {
+      await new Promise((resolve) => { setTimeout(resolve, Math.min(Math.max(pauseMs, tookMs), 30_000)); });
+    }
   }
 
   const after = await api.listPositions(tenderId);

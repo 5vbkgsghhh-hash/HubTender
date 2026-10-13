@@ -120,6 +120,31 @@ export const renderReport = ({ prep, params, label }) => {
   if (mv.notes.length || markups.unknown.length) p('', ...mv.notes.map((n) => `- ${n}`), ...markups.unknown.map((u) => `- без соответствия: ${cell(u)}`));
   p('');
 
+  if (prep.growth) {
+    const { growth, visitOther } = parsed;
+    const on = [...growth.entries()].filter(([id]) => prep.growth.enabled.has(id)).sort((x, y) => y[1].flagged - x[1].flagged);
+    const off = [...growth.entries()].filter(([id, e]) => e.flaggedRows && !prep.growth.enabled.has(id));
+    p('## Рост субподряда («Интервал захода подряда на площадку»)', '',
+      `Рост работ субподряда включён для ${on.length} видов затрат (помечена большая часть суммы суб-раб); остальным видам затрат рост отключён: исключений ${prep.growth.exclusions} (работы и материалы).`, '',
+      '| Вид затрат | Суб-раб с «1» / всего | Сумма с «1» | Сумма всего |', '|---|---|---|---|');
+    for (const [id, e] of on) p(`| ${cell(label.get(id) ?? id)} | ${e.flaggedRows} / ${e.rows} | ${fmt(e.flagged)} | ${fmt(e.total)} |`);
+    p('');
+    if (off.length) {
+      p('«1» стоит у меньшей части суммы суб-раб — рост не включён:', '');
+      for (const [id, e] of off) p(`- ${cell(label.get(id) ?? id)}: ${e.flaggedRows} из ${e.rows} строк, ${fmt(e.flagged)} из ${fmt(e.total)} ₽`);
+      p('');
+    }
+    const other = Object.entries(visitOther ?? {});
+    if (other.length) {
+      p('«1» у строк, не являющихся работами субподряда (на портал не переносится):', '');
+      for (const [type, o] of other) {
+        const names = Object.entries(o.details).sort((x, y) => y[1] - x[1]).map(([id, n]) => `${cell(label.get(id) ?? id)} — ${n}`);
+        p(`- ${type}: ${o.rows} строк, ${fmt(o.sum)} ₽ (${names.join('; ')})`);
+      }
+      p('');
+    }
+  }
+
   p('## Затраты на строительство', '', `Строк к записи: ${volumes.rows.length}.`, '');
   if (volumes.skipped.length) {
     p('Не легло (аналога на портале нет):', '');
