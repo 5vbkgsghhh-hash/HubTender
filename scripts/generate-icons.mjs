@@ -26,6 +26,12 @@ const targets = [
   { name: 'apple-touch-icon-120.png', size: 120 },
   { name: 'apple-touch-icon-152.png', size: 152 },
   { name: 'apple-touch-icon-167.png', size: 167 },
+  // Стандартные пути, которые iOS запрашивает сам, если иконка из ссылки в
+  // странице не подошла (старая копия страницы из service worker ссылается на
+  // SVG). Без файлов nginx отдаёт на них index.html — iOS рисует букву «T».
+  { name: 'apple-touch-icon-180x180-precomposed.png', size: 180 },
+  { name: 'apple-touch-icon-180x180.png', size: 180 },
+  { name: 'apple-touch-icon-precomposed.png', size: 180 },
   { name: 'icon-192.png', size: 192 },
   { name: 'icon-512.png', size: 512 },
   { name: 'icon-512-maskable.png', size: 512, scale: MASKABLE_SCALE },
