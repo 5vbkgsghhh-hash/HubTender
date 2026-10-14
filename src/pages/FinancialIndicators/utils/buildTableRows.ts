@@ -10,6 +10,7 @@
 //   • после ИТОГО добавлены «Работы» и «Материалы»
 //   • у материальных строк — тултип осн/вспом (как у строк наценок)
 //   • каждой строке проставлен calc_key (роль) и coeff_pct — для Excel-формул
+//   • строки с нулевым итогом убраны (кроме ИТОГО), нумерация сквозная
 import type { DirectCostTotals, MarkupCoefficients, FinancialCalcResult, IndicatorRow } from '../types';
 
 const fmt = (n: number) => n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
@@ -174,6 +175,11 @@ export const buildTableRows = (
     }),
   ];
 
+  // Строки с нулевым итогом не показываем ни в таблице, ни в Excel; ИТОГО — всегда.
+  // «Ноль» — как на экране: суммы округлены до рубля, поэтому |итог| < 0,5
+  // (заодно отсекает хвосты float после снижения/обнуления). NaN не прячем.
+  const visible = rows.filter((r) => r.is_total || !(Math.abs(r.total_cost ?? 0) < 0.5));
+
   // Последовательная нумерация «№ п/п» (графики её не используют).
-  return rows.map((r, i) => ({ ...r, row_number: i + 1, key: String(i + 1) }));
+  return visible.map((r, i) => ({ ...r, row_number: i + 1, key: String(i + 1) }));
 };

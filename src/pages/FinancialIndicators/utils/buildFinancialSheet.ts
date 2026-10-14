@@ -32,6 +32,17 @@ export const FORMULA_BASES: Record<string, string[]> = {
 // База роста субподряда — не отображаемая строка → берём литералом (Итого / коэф).
 export const LITERAL_BASE = new Set(['growth_sub_work', 'growth_sub_mat']);
 
+// Слагаемые «Прямых затрат» и ИТОГО (calc_key в порядке строк buildTableRows).
+const DIRECT_PARTS = ['subcontract_work', 'subcontract_mat', 'work_su10', 'materials_su10', 'reserve', 'mechanization', 'mvp', 'warranty'];
+const TOTAL_PARTS = [...DIRECT_PARTS, 'coef16', 'growth_work', 'growth_mat', 'growth_sub_work', 'growth_sub_mat', 'unforeseeable', 'ooz', 'ooz_sub', 'ofz', 'profit', 'profit_sub', 'insurance'];
+
+// Диапазон F{первая}:F{последняя} по присутствующим строкам группы. Нулевые строки
+// из таблицы убраны (buildTableRows), порядок сохранён — оставшиеся идут подряд.
+function spanOf(keys: string[], keyRow: Record<string, number>): string | null {
+  const rows = keys.map((k) => keyRow[k]).filter((r): r is number => r !== undefined);
+  return rows.length ? `F${Math.min(...rows)}:F${Math.max(...rows)}` : null;
+}
+
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const num = (n: number | undefined) => (typeof n === 'number' && isFinite(n) ? n : 0);
 
@@ -51,8 +62,9 @@ function markupFormula(row: IndicatorRow, rExcel: number, keyRow: Record<string,
   }
   const keys = FORMULA_BASES[key];
   if (!keys) return '';
-  const refs = keys.map((k) => (keyRow[k] ? `F${keyRow[k]}` : null));
-  if (refs.some((x) => x === null)) return '';
+  // Нулевые строки базы скрыты из таблицы — их вклад 0, просто не складываем.
+  const refs = keys.filter((k) => keyRow[k]).map((k) => `F${keyRow[k]}`);
+  if (refs.length === 0) return '';
   return `(${refs.join('+')})*${coeffCell}`;
 }
 
@@ -111,6 +123,8 @@ export function buildFinancialSheet(input: SheetInput): XLSX.WorkSheet {
   data.forEach((row, i) => {
     if (row.calc_key) keyRow[row.calc_key] = i + 4;
   });
+  const directSpan = spanOf(DIRECT_PARTS, keyRow);
+  const totalSpan = spanOf(TOTAL_PARTS, keyRow);
 
   // ── Строка 1: название тендера (объединено B1:F1), красный жирный ──
   set(0, 0, { t: 's', v: '', s: { border: BORDER } });
@@ -153,15 +167,17 @@ export function buildFinancialSheet(input: SheetInput): XLSX.WorkSheet {
     set(rIdx, 4, customerTotal > 0 ? { t: 'n', f: `F${rExcel}/${customerTotal}`, z: MONEY_FMT, s: fmtStyle(4, MONEY_FMT) } : { t: 'n', v: 0, z: MONEY_FMT, s: fmtStyle(4, MONEY_FMT) });
 
     let fCell: Record<string, unknown>;
-    if (row.calc_key === 'direct_costs' && keyRow['subcontract_work'] && keyRow['warranty']) {
-      fCell = { t: 'n', f: `SUBTOTAL(9,F${keyRow['subcontract_work']}:F${keyRow['warranty']})`, z: MONEY_FMT };
-    } else if (row.calc_key === 'total' && keyRow['subcontract_work'] && keyRow['insurance']) {
-      // ИТОГО = сумма строк Субподряд работы … Страхование (F5:F24). «Прямые»
-      // (F4) — сама SUBTOTAL и вне диапазона → без двойного счёта; вложенных
+    if (row.calc_key === 'direct_costs' && directSpan) {
+      fCell = { t: 'n', f: `SUBTOTAL(9,${directSpan})`, z: MONEY_FMT };
+    } else if (row.calc_key === 'total' && totalSpan) {
+      // ИТОГО = сумма строк Субподряд работы … Страхование (полный лист — F5:F24).
+      // «Прямые» — сама SUBTOTAL и вне диапазона → без двойного счёта; вложенных
       // SUBTOTAL внутри нет → это обычная сумма = grandTotal.
-      fCell = { t: 'n', f: `SUBTOTAL(9,F${keyRow['subcontract_work']}:F${keyRow['insurance']})`, z: MONEY_FMT };
-    } else if (row.calc_key === 'row_works' && keyRow['total'] && keyRow['row_materials']) {
-      fCell = { t: 'n', f: `F${keyRow['total']}-F${keyRow['row_materials']}`, z: MONEY_FMT };
+      fCell = { t: 'n', f: `SUBTOTAL(9,${totalSpan})`, z: MONEY_FMT };
+    } else if (row.calc_key === 'row_works' && keyRow['total']) {
+      // Нулевые «Материалы» скрыты → «Работы» = ИТОГО.
+      const matRow = keyRow['row_materials'];
+      fCell = { t: 'n', f: matRow ? `F${keyRow['total']}-F${matRow}` : `F${keyRow['total']}`, z: MONEY_FMT };
     } else if (isMarkup) {
       const f = markupFormula(row, rExcel, keyRow);
       fCell = f ? { t: 'n', f, z: MONEY_FMT } : { t: 'n', v: num(row.total_cost), z: MONEY_FMT };
