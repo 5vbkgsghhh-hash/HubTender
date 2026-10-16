@@ -36,6 +36,9 @@ INSERT INTO public.client_positions(id,tender_id,position_number,unit_code,volum
  ('eeeeeeee-4000-0000-0000-000000000005','eeeeeeee-3000-0000-0000-000000000005',1,'шт',1,'Насосная установка',0)
 ON CONFLICT (id) DO NOTHING;
 
+-- The MCP pricing target is ready for item pricing (explicit contractor quantity).
+UPDATE public.client_positions SET manual_volume=2 WHERE id='eeeeeeee-4000-0000-0000-000000000001';
+
 INSERT INTO public.boq_items(id,tender_id,client_position_id,sort_number,boq_item_type,material_type,material_name_id,work_name_id,unit_code,quantity,unit_rate,currency_type,delivery_price_type,delivery_amount,consumption_coefficient,total_amount,detail_cost_category_id,quote_link) VALUES
  ('eeeeeeee-5000-0000-0000-000000000001','eeeeeeee-3000-0000-0000-000000000002','eeeeeeee-4000-0000-0000-000000000002',1,'мат','основн.','eeeeeeee-1000-0000-0000-000000000001',NULL,'шт',2,2070000,'RUB','в цене',0,1,4140000,'eeeeeeee-0000-0000-0000-000000000002','КП-PRESSMAX-900'),
  ('eeeeeeee-5000-0000-0000-000000000002','eeeeeeee-3000-0000-0000-000000000002','eeeeeeee-4000-0000-0000-000000000002',2,'раб',NULL,NULL,'eeeeeeee-2000-0000-0000-000000000001','шт',2,1000,'RUB',NULL,0,NULL,2000,'eeeeeeee-0000-0000-0000-000000000002',NULL),

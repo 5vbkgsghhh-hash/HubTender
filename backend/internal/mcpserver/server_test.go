@@ -58,7 +58,7 @@ func TestToolCatalogIsCompleteAndAnnotated(t *testing.T) {
 	}
 }
 
-func TestDirectPricingRequestsConfirmationBeforeServiceCall(t *testing.T) {
+func TestDirectPricingRejectsUnauthorisedRequestBeforeConfirmation(t *testing.T) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "1"}, nil)
 	registerTools(server, &services.PricingService{}, pricing.Principal{})
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -66,12 +66,10 @@ func TestDirectPricingRequestsConfirmationBeforeServiceCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	confirmationAsked := false
-	gotMode := ""
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1"}, &mcp.ClientOptions{
 		ElicitationHandler: func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 			confirmationAsked = true
 			if req != nil && req.Params != nil {
-				gotMode = req.Params.Mode
 				if req.Params.RequestedSchema == nil {
 					t.Error("RequestedSchema must be set for form confirmation")
 				}
@@ -92,11 +90,8 @@ func TestDirectPricingRequestsConfirmationBeforeServiceCall(t *testing.T) {
 			"expected_revision": 0, "request_key": "test-direct-request-001",
 		},
 	})
-	if !confirmationAsked {
-		t.Fatal("direct pricing did not request confirmation")
-	}
-	if gotMode != "form" {
-		t.Fatalf("elicitation mode=%q, want form", gotMode)
+	if confirmationAsked {
+		t.Fatal("an unauthorised/unvalidated request must not ask the engineer to approve a write")
 	}
 	if err == nil && (result == nil || !result.IsError) {
 		t.Fatalf("declined direct pricing was not rejected: %+v", result)

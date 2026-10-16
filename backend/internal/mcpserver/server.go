@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/su10/hubtender/backend/internal/services"
 )
 
-const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. When the client advertises form elicitation (protocol >= 2026-07-28), confirmation uses mode=form InputRequests; otherwise the tool returns CONFIRMATION_REQUIRED with confirmation_state — after human approval retry with confirmation_state and user_confirmed=true. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item. If a required work/material is missing, search nomenclature and units first; use confirmed create_unit/create_nomenclature_item/create_library_item with create-scopes and a user/quote-supplied price. The created library item gives its source_version for VOR insertion. Catalog creation never edits/deletes an existing record.`
+const serverInstructions = `TenderHUB MCP works only with already-created and imported tenders. Search archive/library sources, copy the selected source_version into expected_source_version, inspect the target BOQ item and financial_input_revision, then use tenderhub_price_boq_item to write directly to the VOR. The source version covers currency, units, delivery, consumption and quote evidence as well as rate. Only суб-раб and суб-мат may be written; complex types are unsupported. Pricing checks run before consent and again atomically before commit. Errors block; warnings/information require reviewing the exact findings. Set position_quantity explicitly when Количество ГП is missing. Use source_kind=current to change an existing work/standalone quantity or a linked material conversion coefficient while preserving its price. A linked material quantity is read-only: the server derives it as parent work quantity * conversion_coefficient * stored consumption_coefficient. Never send quantity for a linked material or change its consumption through MCP. Work changes atomically recalculate every linked material and position totals. Writes require confirmation and a request_key for safe retries. When the client advertises form elicitation (protocol >= 2026-07-28), confirmation uses mode=form InputRequests; otherwise the tool returns CONFIRMATION_REQUIRED with confirmation_state — after human approval retry with confirmation_state and user_confirmed=true. Read the item and tender back after every write. Never invent a rate or silently replace an unmatched item. If a required work/material is missing, search nomenclature and units first; use confirmed create_unit/create_nomenclature_item/create_library_item with create-scopes and a user/quote-supplied price. The created library item gives its source_version for VOR insertion. Catalog creation never edits/deletes an existing record.`
 
 type Config struct {
 	MaxRequestBodyBytes int64
@@ -31,7 +32,7 @@ func NewHTTPHandler(svc *services.PricingService, cfg Config) http.Handler {
 		}
 		principal := pricing.Principal{UserID: u.ID, Email: u.Email, RoleCode: u.Role, Scopes: u.Scopes, ClientID: u.ClientID}
 		server := mcp.NewServer(&mcp.Implementation{
-			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.1.1",
+			Name: "tenderhub-mcp-server", Title: "TenderHUB MCP", Version: "2.2.0",
 			Description: "Source-backed direct VOR pricing with audit and retry-safe receipts",
 		}, &mcp.ServerOptions{Instructions: serverInstructions, SchemaCache: cache, Capabilities: &mcp.ServerCapabilities{}})
 		registerTools(server, svc, principal)
@@ -110,6 +111,7 @@ type directReceiptInput struct {
 	RequestKey string `json:"request_key"`
 }
 type directPriceInput struct {
+	PositionQuantity      *float64 `json:"position_quantity,omitempty" jsonschema:"Explicit positive Количество ГП for the target position. Required if the position has none; never inferred from customer volume"`
 	ExpectedSourceVersion string   `json:"expected_source_version,omitempty" jsonschema:"Required source_version from the selected archive/library search result. Covers currency, units, delivery, consumption and quote evidence. Omit for current"`
 	DetailCostCategoryID  *string  `json:"detail_cost_category_id,omitempty" jsonschema:"Required for a new library item; use tenderhub_list_cost_categories"`
 	TenderID              string   `json:"tender_id"`
@@ -265,24 +267,49 @@ func registerTools(server *mcp.Server, svc *services.PricingService, principal p
 		return md("Committed direct pricing request `" + in.RequestKey + "`."), *result, nil
 	})
 	mcp.AddTool(server, destructiveTool("tenderhub_price_boq_item", "Write one BOQ row directly in the VOR", "Create/update directly from archive/library, or use source_kind=current to edit work/standalone quantity or linked material conversion. Linked material quantity is server-derived and cannot be set. Work updates atomically recalculate all linked materials. Requires pricing:write, current revision/ETag and confirmation. Reuse request_key only for identical retry; read back afterwards."), func(ctx context.Context, req *mcp.CallToolRequest, in directPriceInput) (*mcp.CallToolResult, pricing.DirectPricingResult, error) {
-		action := "Create a BOQ row"
-		if in.TargetItemID != nil {
-			action = "Update an existing BOQ row"
+		input := services.DirectPricingInput{
+			TenderID: in.TenderID, TargetPositionID: in.TargetPositionID, TargetItemID: in.TargetItemID,
+			ParentWorkItemID: in.ParentWorkItemID, DetailCostCategoryID: in.DetailCostCategoryID,
+			SourceKind: in.SourceKind, SourceID: in.SourceID, LibraryKind: in.LibraryKind,
+			ExpectedSourceRate: in.ExpectedSourceRate, ExpectedSourceVersion: in.ExpectedSourceVersion,
+			ConversionCoefficient: in.ConversionCoefficient, Quantity: in.Quantity,
+			PositionQuantity: in.PositionQuantity,
+			ExpectedETag:     in.ExpectedETag, ExpectedRevision: in.ExpectedRevision,
+			RequestKey: in.RequestKey, Rationale: in.Rationale, Confirm: true,
 		}
-		msg := fmt.Sprintf("%s in TenderHUB VOR, tender %s, position %s, item %v, source %s/%s, source rate %.2f, requested quantity %v, conversion %v? Linked quantities are calculated from the parent; a work update recalculates every linked material. This changes direct costs immediately.", action, in.TenderID, in.TargetPositionID, valueOrNone(in.TargetItemID), in.SourceKind, in.SourceID, in.ExpectedSourceRate, valueOrNone(in.Quantity), valueOrNone(in.ConversionCoefficient))
-		if pending, err := requireConfirmation(req, msg, confirmationState(in), in.confirmationAck); pending != nil || err != nil {
+		preview, err := svc.PreviewDirectPrice(ctx, principal, input)
+		if err != nil {
+			return nil, pricing.DirectPricingResult{}, err
+		}
+		if preview.Checks != nil && preview.Checks.Blocking {
+			return nil, pricing.DirectPricingResult{}, &repository.PricingChecksError{Checks: *preview.Checks}
+		}
+		msg := fmt.Sprintf("Записать расчёт TenderHUB: тендер %s, позиция %s. Строка %s (%s), единица %s. Количество строки %s; цена за единицу %s %s; сумма строки %s RUB; Количество ГП %v; итог позиции %s RUB. Коэффициенты: перевод %v, расход %v. Изменение работы пересчитывает связанные материалы.",
+			in.TenderID, in.TargetPositionID, preview.Name, preview.ItemType, preview.UnitCode, strconv.FormatFloat(preview.Quantity, 'f', -1, 64), strconv.FormatFloat(preview.UnitRate, 'f', -1, 64), preview.Currency,
+			strconv.FormatFloat(preview.TotalAmount, 'f', -1, 64), valueOrNone(preview.PositionQuantity), strconv.FormatFloat(preview.PositionTotal, 'f', -1, 64), valueOrNone(preview.ConversionCoefficient), valueOrNone(preview.ConsumptionCoefficient))
+		fingerprint := ""
+		if preview.Checks != nil {
+			fingerprint = preview.Checks.Fingerprint
+			for _, f := range preview.Checks.Findings {
+				msg += fmt.Sprintf("\n%s [%s], %s: %s", f.RuleCode, f.Severity, f.EntityID, f.Detail)
+			}
+		}
+		for _, warning := range preview.Warnings {
+			msg += "\nИсточник: " + warning
+		}
+		// The acknowledgement binds both request arguments and the actual server
+		// findings. Never bind nested acknowledgement fields to themselves.
+		cleanInput := in
+		cleanInput.confirmationAck = confirmationAck{}
+		state := confirmationState(struct {
+			Input  directPriceInput
+			Checks string
+		}{cleanInput, fingerprint})
+		if pending, err := requireConfirmation(req, msg, state, in.confirmationAck); pending != nil || err != nil {
 			return pending, pricing.DirectPricingResult{}, err
 		}
-		out, err := svc.ApplyDirectPrice(ctx, principal, services.DirectPricingInput{
-			TenderID: in.TenderID, TargetPositionID: in.TargetPositionID, TargetItemID: in.TargetItemID,
-			ParentWorkItemID:     in.ParentWorkItemID,
-			DetailCostCategoryID: in.DetailCostCategoryID,
-			SourceKind:           in.SourceKind, SourceID: in.SourceID, LibraryKind: in.LibraryKind,
-			ExpectedSourceRate: in.ExpectedSourceRate, ExpectedSourceVersion: in.ExpectedSourceVersion,
-			ConversionCoefficient: in.ConversionCoefficient,
-			Quantity:              in.Quantity, ExpectedETag: in.ExpectedETag, ExpectedRevision: in.ExpectedRevision,
-			RequestKey: in.RequestKey, Rationale: in.Rationale, Confirm: true,
-		})
+		input.ExpectedChecksFingerprint = fingerprint
+		out, err := svc.ApplyDirectPrice(ctx, principal, input)
 		if out == nil {
 			return nil, pricing.DirectPricingResult{}, err
 		}

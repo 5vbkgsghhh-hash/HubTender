@@ -22,14 +22,17 @@ var (
 )
 
 type DirectPricingCommit struct {
-	TenderID          string
-	ActorID           string
-	RequestKey        string
-	RequestHash       string
-	ExpectedRevision  int64
-	Operation         pricing.DirectOperation
-	ParentWorkItemID  *string
-	RequestedQuantity *float64
+	Preview                   bool
+	PositionQuantity          *float64
+	ExpectedChecksFingerprint string
+	TenderID                  string
+	ActorID                   string
+	RequestKey                string
+	RequestHash               string
+	ExpectedRevision          int64
+	Operation                 pricing.DirectOperation
+	ParentWorkItemID          *string
+	RequestedQuantity         *float64
 }
 
 // GetDirectPricingReceipt returns a committed command by actor and request
@@ -121,33 +124,36 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	var inserted int
-	err = tx.QueryRow(ctx, `INSERT INTO public.mcp_direct_pricing_requests
+	if !in.Preview {
+		var inserted int
+		err = tx.QueryRow(ctx, `INSERT INTO public.mcp_direct_pricing_requests
 		(actor_id,request_key,request_hash,tender_id,result)
 		VALUES ($1,$2,$3,$4,'{}'::jsonb)
 		ON CONFLICT (actor_id,request_key) DO NOTHING RETURNING 1`,
-		in.ActorID, in.RequestKey, in.RequestHash, in.TenderID).Scan(&inserted)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var existingHash string
-		var raw []byte
-		if err := tx.QueryRow(ctx, `SELECT request_hash,result
+			in.ActorID, in.RequestKey, in.RequestHash, in.TenderID).Scan(&inserted)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var existingHash string
+			var raw []byte
+			if err := tx.QueryRow(ctx, `SELECT request_hash,result
 			FROM public.mcp_direct_pricing_requests
 			WHERE actor_id=$1 AND request_key=$2 FOR UPDATE`,
-			in.ActorID, in.RequestKey).Scan(&existingHash, &raw); err != nil {
+				in.ActorID, in.RequestKey).Scan(&existingHash, &raw); err != nil {
+				return nil, err
+			}
+			if existingHash != in.RequestHash {
+				return nil, ErrDirectRequestKeyReused
+			}
+			var prior pricing.DirectPricingResult
+			if err := json.Unmarshal(raw, &prior); err != nil {
+				return nil, err
+			}
+			prior.Replayed = true
+			return &prior, nil
+		}
+		if err != nil {
 			return nil, err
 		}
-		if existingHash != in.RequestHash {
-			return nil, ErrDirectRequestKeyReused
-		}
-		var prior pricing.DirectPricingResult
-		if err := json.Unmarshal(raw, &prior); err != nil {
-			return nil, err
-		}
-		prior.Replayed = true
-		return &prior, nil
-	}
-	if err != nil {
-		return nil, err
+
 	}
 
 	// Receipt insertion holds FK KEY SHARE on the tender. NO KEY UPDATE
@@ -186,6 +192,28 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	}
 	if !leaf {
 		return nil, ErrDirectTargetInvalid
+	}
+	// Lock all existing target rows before checking the prospective position.
+	locked, err := tx.Query(ctx, `SELECT id FROM public.boq_items WHERE client_position_id=$1 ORDER BY id FOR UPDATE NOWAIT`, in.Operation.TargetPositionID)
+	if err != nil {
+		return nil, err
+	}
+	for locked.Next() {
+		var id string
+		if err := locked.Scan(&id); err != nil {
+			locked.Close()
+			return nil, err
+		}
+	}
+	err = locked.Err()
+	locked.Close()
+	if err != nil {
+		return nil, err
+	}
+	if in.PositionQuantity != nil {
+		if _, err := tx.Exec(ctx, `UPDATE public.client_positions SET manual_volume=$2,updated_at=now() WHERE id=$1`, in.Operation.TargetPositionID, *in.PositionQuantity); err != nil {
+			return nil, err
+		}
 	}
 	if in.Operation.SourceKind != "current" {
 		if err := validateDirectSourceTx(ctx, tx, in.Operation); err != nil {
@@ -242,6 +270,9 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 			return nil, err
 		}
 		payload.Quantity, payload.BaseQuantity = &quantity, nil
+	}
+	if err := validateMCPPricingItemTx(ctx, tx, payload, parentID); err != nil {
+		return nil, err
 	}
 	in.Operation.ProposedPayload = payload
 
@@ -329,6 +360,34 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 		})
 	}
 	result.ETag = etag
+	result.ItemType = item.BoqItemType
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(wn.name,mn.name,''),COALESCE(b.unit_code,'') FROM public.boq_items b LEFT JOIN public.work_names wn ON wn.id=b.work_name_id LEFT JOIN public.material_names mn ON mn.id=b.material_name_id WHERE b.id=$1`, item.ID).Scan(&result.Name, &result.UnitCode); err != nil {
+		return nil, err
+	}
+	for _, child := range children {
+		if child.ClientPositionID != item.ClientPositionID {
+			return nil, fmt.Errorf("MCP_PRICING_CHECKS_BLOCKED: F: linked material belongs to another VOR position")
+		}
+		if err := validateMCPPricingItemTx(ctx, tx, proposedFromBoqRow(child), child.ParentWorkItemID); err != nil {
+			return nil, err
+		}
+	}
+	result.Checks, err = runDirectPricingChecksTx(ctx, tx, in.TenderID, item.ClientPositionID, item.ID, old == nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT manual_volume,COALESCE(total_material,0)+COALESCE(total_works,0) FROM public.client_positions WHERE id=$1`, item.ClientPositionID).Scan(&result.PositionQuantity, &result.PositionTotal); err != nil {
+		return nil, err
+	}
+	if in.Preview {
+		return result, nil
+	} // deferred rollback, including audit/revision
+	if result.Checks.Blocking {
+		return nil, &PricingChecksError{Checks: *result.Checks}
+	}
+	if (in.ExpectedChecksFingerprint != "" && in.ExpectedChecksFingerprint != result.Checks.Fingerprint) || (len(result.Checks.Findings) > 0 && in.ExpectedChecksFingerprint == "") {
+		return nil, fmt.Errorf("MCP_PRICING_CHECKS_CHANGED: preview and explicitly confirm the current findings before writing")
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return nil, err

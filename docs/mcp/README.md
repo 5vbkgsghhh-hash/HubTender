@@ -70,3 +70,9 @@ reconnect a client with the new scopes. Template editing retains its separate ga
 - [ROLLBACK.md](ROLLBACK.md) — disable writes and restore BOQ via VOR audit.
 - [SECURITY.md](SECURITY.md) — scopes, receipts, transaction and source rules.
 - [MIGRATION_MANIFEST.md](MIGRATION_MANIFEST.md) — database object changes.
+
+## Проверки записи
+
+С 16.10.2026: только `суб-раб`/`суб-мат`, обязательные поля, 17 выбранных
+правил, предварительный расчёт, подтверждение предупреждений и атомарная
+повторная проверка. См. [PRICING_CHECKS.md](PRICING_CHECKS.md).

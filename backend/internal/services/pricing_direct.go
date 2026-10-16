@@ -24,23 +24,25 @@ var directRequestKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,80}$`)
 // Updates preserve name, category and binding. Explicit quantity/conversion
 // edits are limited by whether the row is a linked material.
 type DirectPricingInput struct {
-	ExpectedSourceVersion string   `json:"expected_source_version,omitempty"`
-	ConversionCoefficient *float64 `json:"conversion_coefficient,omitempty"`
-	TenderID              string   `json:"tender_id"`
-	TargetPositionID      string   `json:"target_position_id"`
-	TargetItemID          *string  `json:"target_item_id,omitempty"`
-	ParentWorkItemID      *string  `json:"parent_work_item_id,omitempty"`
-	DetailCostCategoryID  *string  `json:"detail_cost_category_id,omitempty"`
-	SourceKind            string   `json:"source_kind"` // archive | library | current
-	SourceID              string   `json:"source_id"`
-	ExpectedSourceRate    float64  `json:"expected_source_rate"`
-	LibraryKind           string   `json:"library_kind,omitempty"` // work | material
-	Quantity              *float64 `json:"quantity,omitempty"`
-	ExpectedETag          *string  `json:"expected_etag,omitempty"`
-	ExpectedRevision      int64    `json:"expected_revision"`
-	RequestKey            string   `json:"request_key"`
-	Rationale             string   `json:"rationale,omitempty"`
-	Confirm               bool     `json:"confirm"`
+	PositionQuantity          *float64 `json:"position_quantity,omitempty"`
+	ExpectedChecksFingerprint string   `json:"-"`
+	ExpectedSourceVersion     string   `json:"expected_source_version,omitempty"`
+	ConversionCoefficient     *float64 `json:"conversion_coefficient,omitempty"`
+	TenderID                  string   `json:"tender_id"`
+	TargetPositionID          string   `json:"target_position_id"`
+	TargetItemID              *string  `json:"target_item_id,omitempty"`
+	ParentWorkItemID          *string  `json:"parent_work_item_id,omitempty"`
+	DetailCostCategoryID      *string  `json:"detail_cost_category_id,omitempty"`
+	SourceKind                string   `json:"source_kind"` // archive | library | current
+	SourceID                  string   `json:"source_id"`
+	ExpectedSourceRate        float64  `json:"expected_source_rate"`
+	LibraryKind               string   `json:"library_kind,omitempty"` // work | material
+	Quantity                  *float64 `json:"quantity,omitempty"`
+	ExpectedETag              *string  `json:"expected_etag,omitempty"`
+	ExpectedRevision          int64    `json:"expected_revision"`
+	RequestKey                string   `json:"request_key"`
+	Rationale                 string   `json:"rationale,omitempty"`
+	Confirm                   bool     `json:"confirm"`
 }
 
 func (s *PricingService) GetDirectBoqItem(ctx context.Context, p pricing.Principal, id string) (*repository.BoqItemRow, string, error) {
@@ -87,6 +89,17 @@ func (s *PricingService) GetDirectPricingReceipt(ctx context.Context, p pricing.
 }
 
 func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Principal, in DirectPricingInput) (*pricing.DirectPricingResult, error) {
+	return s.applyDirectPrice(ctx, p, in, false)
+}
+
+// Preview executes the same locked calculation/check path in a transaction
+// which always rolls back. It creates no receipt, provenance or audit records.
+func (s *PricingService) PreviewDirectPrice(ctx context.Context, p pricing.Principal, in DirectPricingInput) (*pricing.DirectPricingResult, error) {
+	in.Confirm = true
+	return s.applyDirectPrice(ctx, p, in, true)
+}
+
+func (s *PricingService) applyDirectPrice(ctx context.Context, p pricing.Principal, in DirectPricingInput, preview bool) (*pricing.DirectPricingResult, error) {
 	if _, err := s.Authorize(ctx, p, mcpauth.ScopePricingWrite, "/positions"); err != nil {
 		return nil, err
 	}
@@ -98,6 +111,9 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 	}
 	if (in.Quantity != nil && !positiveFinite(*in.Quantity)) || (in.ConversionCoefficient != nil && !positiveFinite(*in.ConversionCoefficient)) {
 		return nil, fmt.Errorf("%w: quantity and conversion_coefficient must be finite and positive", ErrInvalidPricingInput)
+	}
+	if in.PositionQuantity != nil && !positiveFinite(*in.PositionQuantity) {
+		return nil, fmt.Errorf("%w: position_quantity (Количество ГП) must be finite and positive", ErrInvalidPricingInput)
 	}
 	if in.ParentWorkItemID != nil && in.Quantity != nil {
 		return nil, repository.ErrLinkedMaterialQuantity
@@ -120,7 +136,9 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 			return nil, repository.ErrDirectRequestKeyReused
 		}
 		prior.Replayed = true
-		s.afterDirectPricingCommit(in.TenderID)
+		if !preview {
+			s.afterDirectPricingCommit(in.TenderID)
+		}
 		return prior, nil
 	}
 	if !s.features.WriteEnabled {
@@ -191,6 +209,35 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 		return nil, err
 	}
 	payload := &op.ProposedPayload
+	// Ordinary donor work/material types retain their unit/rate semantics, while
+	// newly written MCP rows use the agreed subcontractor types. Never convert a
+	// complex rate silently; an engineer must select a proper unit-price source.
+	if target == nil {
+		switch payload.BoqItemType {
+		case "раб", "суб-раб":
+			payload.BoqItemType = "суб-раб"
+		case "мат", "суб-мат":
+			payload.BoqItemType = "суб-мат"
+		default:
+			return nil, fmt.Errorf("%w: only суб-раб/суб-мат unit-price sources are supported", ErrInvalidPricingInput)
+		}
+		if payload.CurrencyType == nil {
+			payload.CurrencyType = stringPtr("RUB")
+		}
+		if payload.BoqItemType == "суб-мат" {
+			if payload.ConsumptionCoefficient == nil {
+				one := 1.0
+				payload.ConsumptionCoefficient = &one
+			}
+			if payload.DeliveryPriceType == nil {
+				payload.DeliveryPriceType = stringPtr("в цене")
+			}
+			if payload.DeliveryAmount == nil {
+				zero := 0.0
+				payload.DeliveryAmount = &zero
+			}
+		}
+	}
 	parentID := in.ParentWorkItemID
 	if target != nil {
 		parentID = target.ParentWorkItemID
@@ -239,11 +286,14 @@ func (s *PricingService) ApplyDirectPrice(ctx context.Context, p pricing.Princip
 		TenderID: in.TenderID, ActorID: p.UserID, RequestKey: in.RequestKey,
 		RequestHash: hash, ExpectedRevision: in.ExpectedRevision, Operation: op,
 		ParentWorkItemID: parentID, RequestedQuantity: in.Quantity,
+		PositionQuantity: in.PositionQuantity, Preview: preview, ExpectedChecksFingerprint: in.ExpectedChecksFingerprint,
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.afterDirectPricingCommit(in.TenderID)
+	if !preview {
+		s.afterDirectPricingCommit(in.TenderID)
+	}
 	return result, nil
 }
 
@@ -269,6 +319,9 @@ func (s *PricingService) buildDirectArchive(ctx context.Context, in DirectPricin
 	}
 	if source == nil {
 		return fmt.Errorf("%w: archive item not found", ErrInvalidPricingInput)
+	}
+	if source.BoqItemType == "раб-комп." || source.BoqItemType == "мат-комп." {
+		return fmt.Errorf("%w: complex source types are not supported; select a суб-раб/суб-мат unit-price source", ErrInvalidPricingInput)
 	}
 	if source.SourceVersion != in.ExpectedSourceVersion || source.UnitRate == nil || math.Abs(*source.UnitRate-in.ExpectedSourceRate) > 0.000001 {
 		return fmt.Errorf("%w: archive source snapshot changed; search again", repository.ErrDirectPricingStale)
@@ -359,6 +412,9 @@ func (s *PricingService) buildDirectLibrary(ctx context.Context, in DirectPricin
 		return fmt.Errorf("%w: library item not found", ErrInvalidPricingInput)
 	}
 	unit, currency, rate := item.UnitCode, item.CurrencyType, item.UnitRate
+	if item.ItemType == "раб-комп." || item.ItemType == "мат-комп." {
+		return fmt.Errorf("%w: complex source types are not supported; select a суб-раб/суб-мат unit-price source", ErrInvalidPricingInput)
+	}
 	if item.SourceVersion != in.ExpectedSourceVersion || math.Abs(rate-in.ExpectedSourceRate) > 0.000001 {
 		return fmt.Errorf("%w: library source snapshot changed; search again", repository.ErrDirectPricingStale)
 	}

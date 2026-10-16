@@ -48,7 +48,7 @@ type createCatalogLibraryInput struct {
 	Kind                   string   `json:"kind" jsonschema:"work or material"`
 	NameID                 string   `json:"name_id" jsonschema:"Existing nomenclature UUID from search or creation"`
 	ExpectedNameVersion    string   `json:"expected_name_version" jsonschema:"version from the chosen nomenclature item; prevents a price being assigned to a changed unit/name"`
-	ItemType               string   `json:"item_type,omitempty" jsonschema:"Work: раб/суб-раб/раб-комп. (default раб); material: мат/суб-мат/мат-комп. (default мат)"`
+	ItemType               string   `json:"item_type,omitempty" jsonschema:"Work: суб-раб only (default); material: суб-мат only (default). Complex types are unsupported"`
 	MaterialType           string   `json:"material_type,omitempty" jsonschema:"For material only: основн. or вспомогат.; default основн."`
 	UnitRate               float64  `json:"unit_rate" jsonschema:"Positive rate explicitly supplied by the user or quote; never invent it"`
 	Currency               string   `json:"currency" jsonschema:"Explicit RUB, USD, EUR or CNY"`

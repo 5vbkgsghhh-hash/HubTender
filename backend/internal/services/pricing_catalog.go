@@ -103,14 +103,14 @@ func NormalizeCatalogCreation(in pricing.CatalogCreationInput) (pricing.CatalogC
 	}
 	if in.Kind == "work" {
 		if in.ItemType == "" {
-			in.ItemType = calc.BoqRab
+			in.ItemType = "суб-раб"
 		}
-		if !calc.IsWorkBoqType(in.ItemType) || in.MaterialType != "" || in.ConsumptionCoefficient != nil || in.DeliveryPriceType != "" || in.DeliveryAmount != nil {
+		if in.ItemType != "суб-раб" || in.MaterialType != "" || in.ConsumptionCoefficient != nil || in.DeliveryPriceType != "" || in.DeliveryAmount != nil {
 			return bad("work creation accepts a work item type and no material recipe/delivery fields")
 		}
 	} else {
 		if in.ItemType == "" {
-			in.ItemType = calc.BoqMat
+			in.ItemType = "суб-мат"
 		}
 		if in.MaterialType == "" {
 			in.MaterialType = "основн."
@@ -126,11 +126,14 @@ func NormalizeCatalogCreation(in pricing.CatalogCreationInput) (pricing.CatalogC
 			zero := 0.0
 			in.DeliveryAmount = &zero
 		}
-		if !calc.IsMaterialBoqType(in.ItemType) || !slices.Contains([]string{"основн.", "вспомогат."}, in.MaterialType) || !positiveFinite(*in.ConsumptionCoefficient) {
-			return bad("valid material type and positive finite consumption are required")
+		if in.ItemType != "суб-мат" || !slices.Contains([]string{"основн.", "вспомогат."}, in.MaterialType) || (!positiveFinite(*in.ConsumptionCoefficient) || *in.ConsumptionCoefficient < 1) {
+			return bad("суб-мат, valid material type and finite consumption >= 1 are required")
 		}
 		if !slices.Contains([]string{calc.DeliveryInPrice, calc.DeliveryNotInPrice, calc.DeliveryAmount}, in.DeliveryPriceType) || *in.DeliveryAmount < 0 || math.IsNaN(*in.DeliveryAmount) || math.IsInf(*in.DeliveryAmount, 0) {
 			return bad("invalid delivery type or amount")
+		}
+		if in.DeliveryPriceType == calc.DeliveryAmount && *in.DeliveryAmount <= 0 {
+			return bad("delivery_amount must be positive for суммой (L)")
 		}
 		if in.DeliveryPriceType != calc.DeliveryAmount && *in.DeliveryAmount != 0 {
 			return bad("delivery_amount is only allowed for delivery_price_type=суммой")

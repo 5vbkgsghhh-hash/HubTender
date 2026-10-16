@@ -132,7 +132,7 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	directArgs := map[string]any{
 		"tender_id": directTender, "target_position_id": directPosition,
 		"source_kind": "archive", "source_id": "eeeeeeee-5000-0000-0000-000000000001",
-		"expected_source_rate": 2070000, "quantity": 2,
+		"expected_source_rate": 2070000, "quantity": 2, "position_quantity": 2,
 		"expected_source_version": selected.SourceVersion,
 		"detail_cost_category_id": "eeeeeeee-0000-0000-0000-000000000002",
 		"expected_revision":       0, "request_key": "http-direct-price-create-001",
@@ -209,6 +209,49 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	// A real non-eliciting HTTP client must see the actual S warning, approve
+	// its snapshot, and create no mutation while confirmation is pending.
+	fallbackClient := mcp.NewClient(&mcp.Implementation{Name: "fallback-checks", Version: "1"}, nil)
+	fallback, err := fallbackClient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fallback.Close()
+	var itemID string
+	if err := pool.QueryRow(ctx, `SELECT id::text FROM public.boq_items WHERE client_position_id=$1`, directPosition).Scan(&itemID); err != nil {
+		t.Fatal(err)
+	}
+	_, etag, err := pricingRepo.GetCurrentBoqItem(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warningArgs := map[string]any{"tender_id": directTender, "target_position_id": directPosition, "target_item_id": itemID, "source_kind": "current", "quantity": 3000, "expected_etag": etag, "expected_revision": 1, "request_key": "http-confirm-warning-001"}
+	pending, err := fallback.CallTool(ctx, &mcp.CallToolParams{Name: "tenderhub_price_boq_item", Arguments: warningArgs})
+	if err != nil || !pending.IsError {
+		t.Fatalf("warning pending: %+v %v", pending, err)
+	}
+	text := ""
+	for _, content := range pending.Content {
+		if tc, ok := content.(*mcp.TextContent); ok {
+			text += tc.Text
+		}
+	}
+	if !strings.Contains(text, "S [warning]") || !strings.Contains(text, "3000") || !strings.Contains(text, "confirmation_state=") {
+		t.Fatalf("warning not presented: %s", text)
+	}
+	if err := pool.QueryRow(ctx, `SELECT financial_input_revision FROM public.tenders WHERE id=$1`, directTender).Scan(&revision); err != nil || revision != 1 {
+		t.Fatalf("pending write changed revision %d: %v", revision, err)
+	}
+	state := strings.Fields(strings.SplitN(text, "confirmation_state=", 2)[1])[0]
+	warningArgs["confirmation_state"], warningArgs["user_confirmed"] = state, true
+	accepted, err := fallback.CallTool(ctx, &mcp.CallToolParams{Name: "tenderhub_price_boq_item", Arguments: warningArgs})
+	if err != nil || accepted.IsError {
+		t.Fatalf("warning approval: %+v %v", accepted, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT financial_input_revision FROM public.tenders WHERE id=$1`, directTender).Scan(&revision); err != nil || revision != 2 {
+		t.Fatalf("approved write revision %d: %v", revision, err)
+	}
+
 	if err := oauthRepo.RevokeGrant(ctx, httpEvalUser, clientID); err != nil {
 		t.Fatal(err)
 	}

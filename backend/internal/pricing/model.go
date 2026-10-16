@@ -61,6 +61,12 @@ type PricingState struct {
 
 // DirectPricingResult is a committed BOQ change. It has no draft lifecycle.
 type DirectPricingResult struct {
+	Name                   string                 `json:"name,omitempty"`
+	ItemType               string                 `json:"item_type,omitempty"`
+	UnitCode               string                 `json:"unit_code,omitempty"`
+	Checks                 *PricingChecks         `json:"checks,omitempty"`
+	PositionQuantity       *float64               `json:"position_quantity,omitempty"`
+	PositionTotal          float64                `json:"position_total"`
 	SourceVersion          string                 `json:"source_version,omitempty"`
 	Quantity               float64                `json:"quantity"`
 	ParentWorkItemID       *string                `json:"parent_work_item_id,omitempty"`
