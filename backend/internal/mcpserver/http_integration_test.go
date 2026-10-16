@@ -82,6 +82,8 @@ func TestAuthenticatedHTTPToolCatalogSearchAndGrantRevoke(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM public.mcp_direct_pricing_requests WHERE actor_id=$1`, httpEvalUser)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items WHERE tender_id=$1`, directTender)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.boq_items_audit WHERE changed_by=$1`, httpEvalUser)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.position_pricing_owners WHERE client_position_id=$1`, directPosition)
+		_, _ = pool.Exec(ctx, `DELETE FROM public.client_position_pricing_audit WHERE client_position_id=$1`, directPosition)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.client_positions WHERE id=$1`, directPosition)
 		_, _ = pool.Exec(ctx, `DELETE FROM public.tenders WHERE id=$1`, directTender)
 	}()

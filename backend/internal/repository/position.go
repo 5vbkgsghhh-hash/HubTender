@@ -354,7 +354,7 @@ func (r *PositionRepo) UpdatePositionsNote(ctx context.Context, ids []string, no
 	if len(ids) == 0 {
 		return nil
 	}
-	_, err := r.pool.Exec(ctx,
+	err := execWithPricingActor(ctx, r.pool,
 		`UPDATE public.client_positions SET manual_note = $2, updated_at = NOW()
 		 WHERE id = ANY($1::uuid[])`,
 		ids, note,
@@ -379,6 +379,12 @@ func (r *PositionRepo) ClearPositionsBoq(ctx context.Context, ids []string, chan
 
 	if err := setAuditUser(ctx, tx, changedBy); err != nil {
 		return fmt.Errorf("positionRepo.ClearPositionsBoq: %w", err)
+	}
+
+	for _, id := range ids {
+		if _, err := tx.Exec(ctx, `SELECT public.assert_position_pricing_owner($1,false)`, id); err != nil {
+			return err
+		}
 	}
 
 	// Категория A (0.1.2.4a): удаление BOQ-строк с commercial values — пересчёт

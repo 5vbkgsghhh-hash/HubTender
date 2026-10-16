@@ -215,7 +215,9 @@ type CancelResult struct {
 	TenderID string `json:"-"`
 }
 
-// CancelSession atomically:
+// CancelSession always requires the import owner. requireOwnership is retained
+// for source compatibility; false no longer bypasses calculation ownership.
+// It atomically:
 //  1. deletes boq_items rows tagged with import_session_id
 //  2. deletes the ДОП the import created, if they are empty now
 //  3. restores client_positions.manual_volume / manual_note from snapshot
@@ -253,7 +255,7 @@ func (r *ImportLogRepo) CancelSession(ctx context.Context, sessionID, cancelledB
 		}
 		return nil, fmt.Errorf("importLogRepo.CancelSession: load: %w", err)
 	}
-	if requireOwnership && ownerID != cancelledBy {
+	if ownerID != cancelledBy {
 		return nil, ErrImportSessionForbidden
 	}
 	// Повторная отмена снова накатила бы снимок ГП поверх более поздних правок.

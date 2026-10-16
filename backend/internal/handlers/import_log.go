@@ -11,8 +11,9 @@ import (
 	"github.com/su10/hubtender/backend/pkg/apierr"
 )
 
-// importLogFullAccessRoles see every user's import sessions and may cancel any
-// of them. All other roles are restricted to their own sessions.
+// importLogFullAccessRoles see every user's import sessions; cancellation
+// remains restricted to the import author and the calculation owner.
+// All other roles are restricted to viewing their own sessions.
 var importLogFullAccessRoles = map[string]bool{
 	"administrator":      true,
 	"developer":          true,
@@ -117,8 +118,8 @@ func (h *ImportLogHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		apierr.Unauthorized("missing auth context").Render(w)
 		return
 	}
-	requireOwnership := !importLogFullAccessRoles[authUser.Role]
-	res, err := h.svc.CancelSession(r.Context(), sessionID, authUser.ID, requireOwnership)
+	// Viewing the full journal does not grant cancellation of another author's work.
+	res, err := h.svc.CancelSession(r.Context(), sessionID, authUser.ID, true)
 	if err != nil {
 		switch {
 		case errors.Is(err, repository.ErrImportSessionForbidden):

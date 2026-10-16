@@ -17,6 +17,7 @@ func seedPatchFixture(t *testing.T, pool *pgxpool.Pool, tag string) (tenderID, w
 	t.Helper()
 	ctx := context.Background()
 	tenderID, posID := seedSourceTender(t, pool, tag)
+	seedTestPricingOwner(t, pool, posID)
 	workNameID, matNameID := ensureTestNames(t, pool)
 
 	if err := pool.QueryRow(ctx, `

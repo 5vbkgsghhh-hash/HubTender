@@ -123,6 +123,9 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setAuditUser(ctx, tx, in.ActorID); err != nil {
+		return nil, err
+	}
 
 	if !in.Preview {
 		var inserted int
@@ -169,13 +172,14 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	if revision != in.ExpectedRevision {
 		return nil, ErrDirectPricingStale
 	}
+	var previousGP *float64
 	var positionTender string
 	var leaf bool
 	// Lock before checking the hierarchy in a fresh statement snapshot. The
 	// stronger position lock also blocks FK references from a new child while
 	// the leaf-only write is in progress; only the tender lock needs NO KEY.
-	err = tx.QueryRow(ctx, `SELECT tender_id::text FROM public.client_positions
-		WHERE id=$1 FOR UPDATE NOWAIT`, in.Operation.TargetPositionID).Scan(&positionTender)
+	err = tx.QueryRow(ctx, `SELECT tender_id::text,manual_volume FROM public.client_positions
+		WHERE id=$1 FOR UPDATE NOWAIT`, in.Operation.TargetPositionID).Scan(&positionTender, &previousGP)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrDirectTargetInvalid
@@ -192,6 +196,12 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 	}
 	if !leaf {
 		return nil, ErrDirectTargetInvalid
+	}
+	if _, err := tx.Exec(ctx, `SELECT public.assert_position_pricing_owner($1,true)`, in.Operation.TargetPositionID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.pricing_request_key',$1,true)`, in.RequestKey); err != nil {
+		return nil, err
 	}
 	// Lock all existing target rows before checking the prospective position.
 	locked, err := tx.Query(ctx, `SELECT id FROM public.boq_items WHERE client_position_id=$1 ORDER BY id FOR UPDATE NOWAIT`, in.Operation.TargetPositionID)
@@ -360,6 +370,7 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 		})
 	}
 	result.ETag = etag
+	result.PreviousPositionQuantity = previousGP
 	result.ItemType = item.BoqItemType
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(wn.name,mn.name,''),COALESCE(b.unit_code,'') FROM public.boq_items b LEFT JOIN public.work_names wn ON wn.id=b.work_name_id LEFT JOIN public.material_names mn ON mn.id=b.material_name_id WHERE b.id=$1`, item.ID).Scan(&result.Name, &result.UnitCode); err != nil {
 		return nil, err
@@ -372,7 +383,7 @@ func (r *PricingRepo) ApplyDirectPricing(ctx context.Context, in DirectPricingCo
 			return nil, err
 		}
 	}
-	result.Checks, err = runDirectPricingChecksTx(ctx, tx, in.TenderID, item.ClientPositionID, item.ID, old == nil)
+	result.Checks, err = runDirectPricingChecksTx(ctx, tx, in.TenderID, item.ClientPositionID, item.ID, old == nil, previousGP)
 	if err != nil {
 		return nil, err
 	}

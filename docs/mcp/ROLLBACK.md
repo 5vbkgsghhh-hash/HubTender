@@ -39,3 +39,8 @@ item can be deleted through the normal VOR action with its current ETag.
 Dropping MCP tables is permitted only on an empty/disposable staging database
 after confirming there are no applied drafts. There is intentionally no
 automated destructive down script in this package.
+
+Retain `position_pricing_owners`, its guards, and `client_position_pricing_audit`.
+Rolling the BFF back to a version that does not propagate the verified actor
+requires pausing portal pricing writes: old routes cannot enforce the new
+ownership contract. Disabling MCP alone does not fix an incompatible portal BFF.

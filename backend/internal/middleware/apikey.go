@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 
+	"github.com/su10/hubtender/backend/internal/actorctx"
 	"github.com/su10/hubtender/backend/pkg/apierr"
 )
 
@@ -104,6 +105,7 @@ func JWTOrAPIKey(cfg VerifyConfig, verifier APIKeyVerifier) func(http.Handler) h
 
 			ctx := context.WithValue(r.Context(), CtxAPIKey, principal)
 			ctx = context.WithValue(ctx, CtxUser, authUser)
+			ctx = actorctx.WithUserID(ctx, authUser.ID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

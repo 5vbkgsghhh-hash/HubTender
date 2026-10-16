@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog/log"
 )
 
@@ -28,6 +30,15 @@ import (
 // "kN" / "vN" — keep them short (tender_id, position_id, etc.). Caller is
 // responsible for NOT putting tokens / passwords / DSNs into either.
 func InternalFromErr(w http.ResponseWriter, r *http.Request, err error, detail string, kv ...any) {
+	var ownership *pgconn.PgError
+	if errors.As(err, &ownership) && ownership.Code == "42501" && (strings.HasPrefix(ownership.Message, "PRICING_OWNER_") || strings.HasPrefix(ownership.Message, "PRICING_ACTOR_")) {
+		message := "Изменять или удалять расчёт может только его владелец"
+		if strings.HasPrefix(ownership.Message, "PRICING_OWNER_UNASSIGNED") {
+			message = "Автор расчёта не определён или авторов несколько; требуется назначение владельца"
+		}
+		Forbidden(message).Render(w)
+		return
+	}
 	// Клиент оборвал запрос (навигация / AbortController): r.Context() отменён.
 	// Это не серверная ошибка — не капчим в Sentry, отдаём 499. Только
 	// context.Canceled: context.DeadlineExceeded (серверные таймауты) должен

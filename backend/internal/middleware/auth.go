@@ -13,6 +13,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
+	"github.com/su10/hubtender/backend/internal/actorctx"
 	"github.com/su10/hubtender/backend/pkg/apierr"
 )
 
@@ -156,6 +157,7 @@ func jwtAuth(cfg VerifyConfig, challenge string) func(http.Handler) http.Handler
 				return
 			}
 			ctx := context.WithValue(r.Context(), CtxUser, authUser)
+			ctx = actorctx.WithUserID(ctx, authUser.ID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

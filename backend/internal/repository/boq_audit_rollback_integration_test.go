@@ -99,6 +99,7 @@ func seedRollbackFixture(t *testing.T, pool *pgxpool.Pool, tag string, usdRate *
 
 	scan(&f.posID, `INSERT INTO public.client_positions (tender_id, position_number, work_name)
 	                VALUES ($1::uuid, 1, 'itest-rb-pos') RETURNING id::text`, f.tenderID)
+	seedTestPricingOwner(t, pool, f.posID)
 
 	t.Cleanup(func() {
 		must(`DELETE FROM public.boq_items_audit WHERE (old_data->>'tender_id') = $1 OR (new_data->>'tender_id') = $1`, f.tenderID)

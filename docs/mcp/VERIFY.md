@@ -26,10 +26,14 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f scripts/mcp/verify_migration.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f scripts/mcp/verify_direct_migration.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f scripts/mcp/verify_pricing_ownership.sql
 ```
 
 Expected: `MCP_MIGRATION_OK` and `MCP_DIRECT_MIGRATION_OK`. No production
-data is changed.
+data is changed. Ownership verification additionally prints
+`MCP_PRICING_OWNERSHIP_SCHEMA_OK`; review unresolved/missing-owner counts and
+perform the two-engineer staging scenarios in `OWNERSHIP.md`.
 
 ## HTTP/MCP gates
 

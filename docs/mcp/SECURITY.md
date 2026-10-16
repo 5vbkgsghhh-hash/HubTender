@@ -14,6 +14,7 @@
   current `engineer` role with `/library`, separate create-scopes, both write
   flags and confirmation. It never edits/deletes an existing shared record.
 - Direct pricing requires `pricing:write`, the `MCP_WRITE_ENABLED` gate, a
+  matching position calculation owner (unknown/mixed legacy owners fail closed),
   current financial-input revision, and (for updates) the item's ETag. The MCP
   tool requires explicit confirmation before the transaction, including all
   linked children. Clients that advertise form elicitation on protocol
@@ -43,3 +44,11 @@
   UPDATE to avoid mutually blocked lock upgrades between simultaneous receipts.
   Source/position/item/parent/child locks use NOWAIT for MCP writes, so portal
   lock ordering returns a conflict rather than forming a wait cycle.
+- Position ownership is also enforced by database triggers for authenticated
+  portal/API writes, including import, clearing, restore and cascading deletion.
+  A senior role does not bypass it; journal visibility does not permit cancelling
+  another user's import. Verified context identity overrides helper/body values.
+- Nomenclature names/units are locked and included in confirmation along with
+  the effective target snapshot and previous GP. Changed names invalidate consent.
+- The privileged database/BFF and background jobs without a delegated actor
+  remain trusted. Do not expose the runtime database credentials to clients.

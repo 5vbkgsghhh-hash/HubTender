@@ -311,6 +311,9 @@ func (r *TenderRepo) DeleteTender(ctx context.Context, id string) error {
 		return fmt.Errorf("tenderRepo.DeleteTender: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setAuditUser(ctx, tx, ""); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM public.tenders WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("tenderRepo.DeleteTender: %w", err)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/su10/hubtender/backend/internal/actorctx"
 	"github.com/su10/hubtender/backend/internal/calc"
 )
 
@@ -198,6 +199,9 @@ func changedFields(old, new *BoqItemRow) []string {
 // Transaction-local (set_config is_local=true); no-op for an empty userID.
 // Call right after BeginTx, before any boq_items mutation in the same tx.
 func setAuditUser(ctx context.Context, tx pgx.Tx, userID string) error {
+	if verified := actorctx.UserID(ctx); verified != "" {
+		userID = verified // verified request identity always wins over helper/body fields
+	}
 	if userID == "" {
 		return nil
 	}
@@ -228,6 +232,9 @@ func insertAudit(
 	changedFlds []string,
 	oldData, newData []byte,
 ) error {
+	if verified := actorctx.UserID(ctx); verified != "" {
+		changedBy = verified
+	}
 	const q = `
 		INSERT INTO public.boq_items_audit
 		    (boq_item_id, operation_type, changed_by, changed_fields, old_data, new_data, changed_at)
@@ -261,6 +268,9 @@ func (r *BoqRepo) CreateBoqItem(ctx context.Context, in CreateBoqItemInput) (*Bo
 		return nil, fmt.Errorf("boqRepo.CreateBoqItem: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setAuditUser(ctx, tx, in.CreatedBy); err != nil {
+		return nil, err
+	}
 
 	if err := skipBoqAuditTrigger(ctx, tx); err != nil {
 		return nil, fmt.Errorf("boqRepo.CreateBoqItem: %w", err)
@@ -358,4 +368,3 @@ func (r *BoqRepo) CreateBoqItem(ctx context.Context, in CreateBoqItemInput) (*Bo
 	}
 	return item, nil
 }
-

@@ -80,7 +80,7 @@ func validateMCPPricingItemTx(ctx context.Context, tx pgx.Tx, p pricing.Proposed
 	return nil
 }
 
-func runDirectPricingChecksTx(ctx context.Context, tx pgx.Tx, tenderID, positionID, proposedID string, isNew bool) (*pricing.PricingChecks, error) {
+func runDirectPricingChecksTx(ctx context.Context, tx pgx.Tx, tenderID, positionID, proposedID string, isNew bool, previousGP *float64) (*pricing.PricingChecks, error) {
 	report := &pricing.PricingChecks{Rules: append([]string{}, directPricingRuleCodes...), Findings: []pricing.PricingCheck{}}
 	// IDs, rather than displayed position numbers, define the scope. Do not
 	// reuse the portal's broad readiness flag as a write authorisation gate.
@@ -102,6 +102,79 @@ func runDirectPricingChecksTx(ctx context.Context, tx pgx.Tx, tenderID, position
 	if err != nil {
 		return nil, err
 	}
+	// Bind consent to all effective inputs and totals, including changes from
+	// legacy routes which did not advance the tender financial revision.
+	var snapshot struct {
+		PositionName                     string
+		PositionUnit                     *string
+		CustomerVolume, ContractorVolume *float64
+		Note                             *string
+		Materials, Works                 float64
+		Items                            []BoqItemRow
+		PreviousContractorVolume         *float64
+		Nomenclature                     []pricingNameSnapshot
+	}
+	if err := tx.QueryRow(ctx, `SELECT work_name,unit_code,volume,manual_volume,manual_note,COALESCE(total_material,0),COALESCE(total_works,0) FROM public.client_positions WHERE id=$1`, positionID).Scan(&snapshot.PositionName, &snapshot.PositionUnit, &snapshot.CustomerVolume, &snapshot.ContractorVolume, &snapshot.Note, &snapshot.Materials, &snapshot.Works); err != nil {
+		return nil, err
+	}
+	snapshot.PreviousContractorVolume = previousGP
+	snapshot.Items = []BoqItemRow{}
+	itemRows, err := tx.Query(ctx, "SELECT "+boqScanCols+" FROM public.boq_items WHERE client_position_id=$1 ORDER BY id", positionID)
+	if err != nil {
+		return nil, err
+	}
+	for itemRows.Next() {
+		item, err := scanBoqItemRow(itemRows)
+		if err != nil {
+			itemRows.Close()
+			return nil, err
+		}
+		if isNew && item.ID == proposedID {
+			item.ID = "proposed-item"
+		}
+		item.CreatedAt = time.Time{}
+		item.UpdatedAt = time.Time{}
+		snapshot.Items = append(snapshot.Items, *item)
+	}
+	err = itemRows.Err()
+	itemRows.Close()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(snapshot.Items, func(i, j int) bool { return snapshot.Items[i].ID < snapshot.Items[j].ID })
+	snapshot.Nomenclature = []pricingNameSnapshot{}
+	workIDs, materialIDs := []string{}, []string{}
+	for _, item := range snapshot.Items {
+		if item.WorkNameID != nil {
+			workIDs = append(workIDs, *item.WorkNameID)
+		}
+		if item.MaterialNameID != nil {
+			materialIDs = append(materialIDs, *item.MaterialNameID)
+		}
+	}
+	for _, kind := range []struct {
+		kind, table string
+		ids         []string
+	}{{"work", "work_names", workIDs}, {"material", "material_names", materialIDs}} {
+		names, err := tx.Query(ctx, "SELECT id::text,name,unit FROM public."+kind.table+" WHERE id=ANY($1::uuid[]) ORDER BY id FOR SHARE NOWAIT", kind.ids)
+		if err != nil {
+			return nil, err
+		}
+		for names.Next() {
+			n := pricingNameSnapshot{Kind: kind.kind}
+			if err := names.Scan(&n.ID, &n.Name, &n.Unit); err != nil {
+				names.Close()
+				return nil, err
+			}
+			snapshot.Nomenclature = append(snapshot.Nomenclature, n)
+		}
+		err = names.Err()
+		names.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	catalog := map[string]quality.Rule{}
 	for _, r := range quality.Active() {
 		catalog[r.Code] = r
@@ -111,8 +184,8 @@ func runDirectPricingChecksTx(ctx context.Context, tx pgx.Tx, tenderID, position
 		if !ok {
 			return nil, fmt.Errorf("MCP_PRICING_CHECK_UNAVAILABLE: %s is not active", code)
 		}
-		q := "SELECT * FROM (" + strings.TrimSuffix(strings.TrimSpace(r.SQL), ";") + ") AS finding WHERE entity_id::text = ANY($2::text[])"
-		found, err := tx.Query(ctx, q, tenderID, scope)
+		q := scopedDirectPricingRuleSQL(r.SQL)
+		found, err := tx.Query(ctx, q, tenderID, scope, positionID)
 		if err != nil {
 			return nil, fmt.Errorf("MCP_PRICING_CHECK_FAILED: %s: %w", code, err)
 		}
@@ -143,43 +216,6 @@ func runDirectPricingChecksTx(ctx context.Context, tx pgx.Tx, tenderID, position
 		a, b := report.Findings[i], report.Findings[j]
 		return a.RuleCode+"|"+a.EntityID < b.RuleCode+"|"+b.EntityID
 	})
-	// Bind consent to all effective inputs and totals, including changes from
-	// legacy routes which did not advance the tender financial revision.
-	var snapshot struct {
-		PositionName                     string
-		PositionUnit                     *string
-		CustomerVolume, ContractorVolume *float64
-		Note                             *string
-		Materials, Works                 float64
-		Items                            []BoqItemRow
-	}
-	if err := tx.QueryRow(ctx, `SELECT work_name,unit_code,volume,manual_volume,manual_note,COALESCE(total_material,0),COALESCE(total_works,0) FROM public.client_positions WHERE id=$1`, positionID).Scan(&snapshot.PositionName, &snapshot.PositionUnit, &snapshot.CustomerVolume, &snapshot.ContractorVolume, &snapshot.Note, &snapshot.Materials, &snapshot.Works); err != nil {
-		return nil, err
-	}
-	snapshot.Items = []BoqItemRow{}
-	itemRows, err := tx.Query(ctx, "SELECT "+boqScanCols+" FROM public.boq_items WHERE client_position_id=$1 ORDER BY id", positionID)
-	if err != nil {
-		return nil, err
-	}
-	for itemRows.Next() {
-		item, err := scanBoqItemRow(itemRows)
-		if err != nil {
-			itemRows.Close()
-			return nil, err
-		}
-		if isNew && item.ID == proposedID {
-			item.ID = "proposed-item"
-		}
-		item.CreatedAt = time.Time{}
-		item.UpdatedAt = time.Time{}
-		snapshot.Items = append(snapshot.Items, *item)
-	}
-	err = itemRows.Err()
-	itemRows.Close()
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(snapshot.Items, func(i, j int) bool { return snapshot.Items[i].ID < snapshot.Items[j].ID })
 	encoded, err := json.Marshal(struct {
 		Catalog  string
 		Findings []pricing.PricingCheck
@@ -196,3 +232,25 @@ func runDirectPricingChecksTx(ctx context.Context, tx pgx.Tx, tenderID, position
 func proposedFromBoqRow(b *BoqItemRow) pricing.ProposedItem {
 	return pricing.ProposedItem{BoqItemType: b.BoqItemType, Quantity: b.Quantity, UnitRate: b.UnitRate, UnitCode: b.UnitCode, WorkNameID: b.WorkNameID, MaterialNameID: b.MaterialNameID, DetailCostCategoryID: b.DetailCostCategoryID, ConsumptionCoefficient: b.ConsumptionCoefficient, ConversionCoefficient: b.ConversionCoefficient, DeliveryPriceType: b.DeliveryPriceType, DeliveryAmount: b.DeliveryAmount}
 }
+
+// Keep the catalogue's business predicates unchanged, but supply bounded input
+// relations before its aggregates/joins. Include referenced external parents so
+// legacy cross-position links still trigger F rather than disappearing.
+func scopedDirectPricingRuleSQL(body string) string {
+	body = strings.ReplaceAll(body, "public.boq_items", "mcp_pricing_scope_boq")
+	body = strings.ReplaceAll(body, "public.client_positions", "mcp_pricing_scope_positions")
+	return `WITH mcp_pricing_scope_positions AS MATERIALIZED (
+  SELECT * FROM public.client_positions WHERE (id=$3::uuid AND tender_id=$1::uuid)
+  OR id IN (SELECT w.client_position_id FROM public.boq_items b
+   JOIN public.boq_items w ON w.id=b.parent_work_item_id
+   WHERE b.client_position_id=$3::uuid AND b.tender_id=$1::uuid)
+ ),mcp_pricing_scope_boq AS MATERIALIZED (
+  SELECT * FROM public.boq_items WHERE client_position_id=$3::uuid AND tender_id=$1::uuid
+  UNION ALL
+  SELECT p.* FROM public.boq_items p WHERE p.id IN (
+   SELECT parent_work_item_id FROM public.boq_items WHERE client_position_id=$3::uuid AND tender_id=$1::uuid
+  ) AND (p.client_position_id<>$3::uuid OR p.tender_id<>$1::uuid)
+ ) SELECT * FROM (` + strings.TrimSuffix(strings.TrimSpace(body), ";") + `) AS finding WHERE entity_id::text=ANY($2::text[])`
+}
+
+type pricingNameSnapshot struct{ ID, Kind, Name, Unit string }

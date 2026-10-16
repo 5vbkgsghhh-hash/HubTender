@@ -36,6 +36,9 @@ func (r *BoqRepo) CopyPositionItems(
 		return nil, fmt.Errorf("boqRepo.CopyPositionItems: begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setAuditUser(ctx, tx, changedBy); err != nil {
+		return nil, err
+	}
 
 	if err := skipBoqAuditTrigger(ctx, tx); err != nil {
 		return nil, fmt.Errorf("boqRepo.CopyPositionItems: %w", err)

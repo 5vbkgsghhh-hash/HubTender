@@ -115,6 +115,9 @@ func (r *BoqAuditRollbackRepo) Rollback(ctx context.Context, auditID, changedBy 
 		return nil, &UnsupportedBoqAuditRollbackError{AuditID: auditID, Operation: opType}
 	}
 
+	if _, err := tx.Exec(ctx, `SELECT public.assert_position_pricing_owner($1,false)`, positionID); err != nil {
+		return nil, err
+	}
 	// 0-F2 (category B): one revision bump for the whole rollback command —
 	// the full recalculation below is performed for exactly this revision and
 	// finishes with the success CAS before commit.

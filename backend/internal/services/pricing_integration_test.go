@@ -26,6 +26,9 @@ const (
 func seedPricingActor(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	scopes := []string{mcpauth.ScopeTendersRead, mcpauth.ScopeArchiveRead, mcpauth.ScopeLibraryRead, mcpauth.ScopePricingWrite}
+	if _, err := pool.Exec(ctx, `DELETE FROM public.position_pricing_owners WHERE client_position_id IN ($1,$2,$3)`, targetPosition, templatePosition, fxPosition); err != nil {
+		t.Fatal(err)
+	}
 	statements := []struct {
 		sql  string
 		args []any

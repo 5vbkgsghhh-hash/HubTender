@@ -37,6 +37,8 @@ func checksFixture(t *testing.T) (context.Context, *pgxpool.Pool, *PricingServic
 	t.Cleanup(func() {
 		must(`DELETE FROM public.mcp_direct_pricing_requests WHERE tender_id=$1`, checksTender)
 		must(`DELETE FROM public.boq_items WHERE tender_id=$1`, checksTender)
+		must(`DELETE FROM public.position_pricing_owners WHERE client_position_id IN (SELECT id FROM public.client_positions WHERE tender_id=$1)`, checksTender)
+		must(`DELETE FROM public.client_position_pricing_audit WHERE tender_id=$1`, checksTender)
 		must(`DELETE FROM public.client_positions WHERE tender_id=$1`, checksTender)
 		must(`DELETE FROM public.tenders WHERE id=$1`, checksTender)
 		must(`DELETE FROM public.boq_items_audit WHERE new_data->>'tender_id'=$1 OR old_data->>'tender_id'=$1`, checksTender)

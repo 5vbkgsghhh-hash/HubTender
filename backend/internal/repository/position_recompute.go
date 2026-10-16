@@ -84,6 +84,9 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setAuditUser(ctx, tx, changedBy); err != nil {
+		return 0, err
+	}
 
 	if err := skipBoqAuditTrigger(ctx, tx); err != nil {
 		return 0, fmt.Errorf("boqRepo.RecomputeLinkedMaterialsForWork: %w", err)
@@ -101,6 +104,9 @@ func (r *BoqRepo) RecomputeLinkedMaterialsForWork(
 	}
 	workTenderID := work.TenderID
 
+	if _, err := tx.Exec(ctx, `SELECT public.assert_position_pricing_owner($1,false)`, work.ClientPositionID); err != nil {
+		return 0, err
+	}
 	// 0-F2 (category A): one user command → one revision bump for the tender;
 	// the children's quantity/total change here, commercial recalc is async.
 	if _, err := MarkTenderFinancialInputsChangedTx(ctx, tx, workTenderID, "recompute_linked_materials"); err != nil {
@@ -248,7 +254,7 @@ func (r *PositionRepo) UpdatePositionFields(ctx context.Context, id string, in U
 	args = append(args, id)
 	q := fmt.Sprintf(
 		`UPDATE public.client_positions SET %s WHERE id = $%d`, setClauses, len(args))
-	if _, err := r.pool.Exec(ctx, q, args...); err != nil {
+	if err := execWithPricingActor(ctx, r.pool, q, args...); err != nil {
 		return fmt.Errorf("positionRepo.UpdatePositionFields: %w", err)
 	}
 	return nil

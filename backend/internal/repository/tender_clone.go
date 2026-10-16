@@ -66,6 +66,9 @@ func (r *CloneRepo) CloneTender(ctx context.Context, sourceTenderID string) (*Cl
 		return nil, fmt.Errorf("cloneRepo.CloneTender: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := setAuditUser(ctx, tx, ""); err != nil {
+		return nil, err
+	}
 
 	// Suppress the per-row grand-total recompute (trg_boq_items_grand_total,
 	// FOR EACH ROW) during the bulk INSERT inside the SQL function; recomputed
